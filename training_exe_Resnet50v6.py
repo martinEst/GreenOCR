@@ -236,8 +236,8 @@ class DualChannelLaplaceTransform:
 
 
         #img_tensor = transform(images[0]).unsqueeze(0).cuda() 
-        from torchvision.transforms.functional import to_pil_image
-        to_pil_image(sharpened[0]).show(title="Channel 0 (Sharpened)")
+        #from torchvision.transforms.functional import to_pil_image
+        #to_pil_image(sharpened[0]).show(title="Channel 0 (Sharpened)")
 
 
         return combined
@@ -662,8 +662,8 @@ model = CRNN(num_classes=num_classes,img_height=64,img_width=2048,in_channels=1)
 
 
 
-exe = False
-epocs_iterat = 10
+exe = True
+epocs_iterat = 30
 
 
 if(exe):
@@ -677,12 +677,12 @@ if(exe):
         shuffle=True,
         collate_fn=ctc_collate_fn) """
     
-    state = model.load_state_dict(torch.load("/home/martinez/TUS/DISSERT/models/crnn_ctc_model_LvzwC_1_ep_0.pth"))  # or your path
+    state = model.load_state_dict(torch.load("/home/martinez/TUS/DISSERT/models/crnn_ctc_model_DvJhB_30_ep_29.pth"))  # or your path
     model = model.to("cuda")
     print("state keys:")
 
     
-    image = Image.open('/home/martinez/TUS/DISSERT/data/customImages/b06-045-02-02.png').convert('RGB')  # grayscale
+    image = Image.open('/home/martinez/TUS/DISSERT/data/customImages/enhanced_image.jpg').convert('RGB')  # grayscale
     img_tensor = transform(image).unsqueeze(0).cuda() 
     #from torchvision.transforms.functional import to_pil_image
    #to_pil_image(img_tensor[0]).show(title="Channel 0 (Sharpened)")
@@ -767,10 +767,7 @@ else:
     device = torch.device("cuda")
     model = model.to(device)    
 
-    img_tensor = transform(images[0]).unsqueeze(0).cuda() 
-    from torchvision.transforms.functional import to_pil_image
-    to_pil_image(img_tensor[0]).show(title="Channel 0 (Sharpened)")
-
+    
     """  from torchvision.transforms.functional import to_pil_image
 
         img_single = img_tensor[0]

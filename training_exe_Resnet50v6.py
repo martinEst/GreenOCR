@@ -1,13 +1,45 @@
 import os
 import gc
-import cv2
 import time
 import torch
 import string
-
+import random
 import numpy as np
 import torch.nn as nn
+
+
+import kornia as K
+import kornia.color as KC
+import kornia.filters as KF
+import kornia.enhance as KE
 import kornia.augmentation as K
+import kornia.augmentation as KA
+import torchvision.transforms as T
+import kornia.geometry.transform as KG
+import torchvision.transforms.functional as TF
+
+
+from torch.utils.data import Dataset
+from PIL import Image
+
+
+from torch.utils.data import Dataset
+
+
+
+import torchvision.transforms as T
+import kornia.color as KC
+import kornia.geometry as KG
+import kornia.augmentation as KA
+import kornia.filters as KF
+import torch.nn as nn
+import torchvision.transforms as T
+import kornia.augmentation as KA
+import kornia.color as KC
+import kornia.filters as KF
+import kornia.geometry.transform as KG
+from PIL import Image
+import numpy as np
 
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
@@ -17,6 +49,13 @@ import torchvision.models as models
 
 from PIL import Image
 
+
+import numpy as np
+from PIL import Image
+from torch.utils.data import Dataset
+
+import os
+import torch
 
 from torch.nn.utils import clip_grad_norm_
 
@@ -48,6 +87,20 @@ from albumentations.pytorch import ToTensorV2
 from kornia.augmentation import AugmentationSequential
 import torchvision.models as models
 
+import torchvision.transforms as T
+import kornia.augmentation as KA
+import kornia.color as KC
+import kornia.geometry.transform as KG
+import kornia.filters as KF
+from PIL import Image
+import numpy as np
+from basicsr.archs.rrdbnet_arch import RRDBNet
+
+from realesrgan import RealESRGANer
+from PIL import Image
+import torch
+import os
+import cv2
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
@@ -60,31 +113,17 @@ torch.backends.cudnn.benchmark = False
 
 
 
-import numpy as np
-from PIL import Image
-from torch.utils.data import Dataset
 
+# any input image or training image width can vary but height is fixed
+IMG_HEIGHT = 64
 
-
-from torch.utils.data import Dataset
-from PIL import Image
-import os
-import numpy as np
-from PIL import Image
-import torch
-from torch.utils.data import Dataset
-from torch.utils.data import Dataset
-from PIL import Image
-import numpy as np
-
-
-
-IMG_HEIGHT = 32  
-IMG_WIDTH = 2048  
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 ## training data has some of germanic scripts and they contain more characters than classical english
 
+
+
+#some special characters that appeared in germanic manuscripts, maybe should be avoided now
 ctc_loss_fn = torch.nn.CTCLoss(blank=0, reduction='mean', zero_infinity=True)
 #germanic_chars = ['ſ','ſ','ä', 'ö', 'ü', 'Ä', 'Ö', 'Ü', 'ß', 'å', 'Å', 'æ', 'Æ', 'ø', 'Ø']
 vocab = ['<blank>'] + ['ſ','—','“','„','’','ô','é']+ list(string.ascii_letters + string.digits + string.punctuation + " ") + ['ä', 'ö', 'ü', 'Ä', 'Ö', 'Ü', 'ß', 'å', 'Å', 'æ', 'Æ', 'ø', 'Ø']
@@ -97,254 +136,15 @@ BLANK_INDEX = 0
 
 
 
-import numpy as np
-from PIL import Image
-import torchvision.transforms.functional as TF
-import torch
-import torch
-import torchvision.transforms as T
-import kornia as K
-import kornia.color as KC
-import kornia.filters as KF
-import kornia.enhance as KE
-import kornia.geometry.transform as KG
-import torch
-import torchvision.transforms as T
-import kornia as K
-import kornia.color as KC
-import kornia.filters as KF
-import kornia.enhance as KE
-import kornia.augmentation as KA
-import kornia.geometry.transform as KG
-from PIL import Image
-
-from PIL import Image
-import os
-import numpy as np
-import torch
-import torchvision.transforms as T
-import kornia.augmentation as KA
-import kornia.filters as KF
-import kornia.color as KC
-import kornia.geometry.transform as KG
 
 
 
-import os
-import torch
-import numpy as np
-from PIL import Image
-import torchvision.transforms as T
-import kornia.color as KC
-import kornia.geometry as KG
-import kornia.augmentation as KA
-import kornia.filters as KF
-import torch
-import torch.nn as nn
-import torchvision.transforms as T
-import kornia.augmentation as KA
-import kornia.color as KC
-import kornia.filters as KF
-import kornia.geometry.transform as KG
-from PIL import Image
-import numpy as np
 gc.collect()  # Python garbage collection
 torch.cuda.empty_cache()  # frees cached memory (not allocated memory)
 
-import torch
-import torchvision.transforms as T
-import kornia.augmentation as KA
-import kornia.color as KC
-import kornia.geometry.transform as KG
-import kornia.filters as KF
-from PIL import Image
-import numpy as np
-
-class DualChannelLaplaceTransform:
-    def __init__(self, target_height=64, max_width=None, 
-                 train=True, output_channels=1,  # <-- NEW FLAG
-                 sharpen_strength=1.5, contrast_clip=(0.01, 0.99)):
-        """
-        output_channels: 1 (single channel) or 2 (sharpened + laplace)
-        """
-        self.target_height = target_height
-        self.max_width = max_width
-        self.train = train
-        self.output_channels = output_channels
-        self.sharpen_strength = sharpen_strength
-        self.contrast_clip = contrast_clip
-        self.to_tensor = T.ToTensor()
-
-        # Augmentations only used during training
-        self.augment = torch.nn.Sequential(
-            KA.RandomAffine(degrees=2.5, translate=(0.02, 0.02), p=0.5),
-            KA.RandomBrightness(0.1, p=0.5),
-            KA.RandomContrast(0.1, p=0.5),
-            KA.RandomGaussianNoise(mean=0.0, std=0.01, p=0.2),
-        )
-
-    def __call__(self, img):
-        
-       
-
-        # Step 1: Convert to tensor
-        if isinstance(img, Image.Image):
-            tensor = self.to_tensor(img).unsqueeze(0)  # [1,C,H,W]
-        elif isinstance(img, np.ndarray):
-            tensor = torch.from_numpy(img).float().unsqueeze(0)
-        elif isinstance(img, torch.Tensor):
-            if img.ndim == 3:
-                tensor = img.unsqueeze(0)
-            else:
-                tensor = img
-        else:
-            raise TypeError(f"Unsupported image type: {type(img)}")
-
-        # Step 2: Grayscale
-        if tensor.shape[1] == 3:
-            gray = KC.rgb_to_grayscale(tensor)
-        else:
-            gray = tensor
-
-        # Step 3: Proportional resize
-        gray = self._resize_proportional(gray)
-
-        # Step 4: Augmentation (if training)
-        if self.train:
-            gray = self.augment(gray)
-
-        # Step 5: Contrast stretch
-        gray = self._contrast_stretch(gray, *self.contrast_clip)
-
-        # Step 6: Sharpen
-        blurred = KF.gaussian_blur2d(gray, (3, 3), (1.0, 1.0))
-        sharpened = torch.clamp(gray + self.sharpen_strength * (gray - blurred), 0.0, 1.0)
-
-        if self.output_channels == 1:
-            # Single channel output
-            return sharpened.squeeze(0)  # [1,H,W] -> remove batch dim for dataset __getitem__
-
-        # Step 7: Laplacian (only if output_channels == 2)
-        laplace = KF.laplacian(sharpened, kernel_size=3)
-
-        # Step 8: Extract first channel from each (safe for B>1)
-        sharpened_1ch = sharpened[:, 0:1, :, :]
-        laplace_1ch = laplace[:, 0:1, :, :]
-
-        # Step 9: Combine into [2,H,W]
-        combined = torch.cat([sharpened_1ch.squeeze(0), laplace_1ch.squeeze(0)], dim=0)
 
 
-        #img_tensor = transform(images[0]).unsqueeze(0).cuda() 
-        #from torchvision.transforms.functional import to_pil_image
-        #to_pil_image(sharpened[0]).show(title="Channel 0 (Sharpened)")
-
-
-        return combined
-
-    def _resize_proportional(self, img):
-        """Resize keeping aspect ratio to target height."""
-        _, _, h, w = img.shape
-        scale = self.target_height / h
-        new_w = int(round(w * scale))
-        if self.max_width:
-            new_w = min(new_w, self.max_width)
-        return KG.resize(img, (self.target_height, new_w), interpolation='bilinear')
-
-    def _contrast_stretch(self, img, low=0.01, high=0.99):
-        if img.dim() == 4:
-            return torch.stack([self._contrast_stretch(single_img, low, high) for single_img in img])
-        stretched = torch.empty_like(img)
-        for c in range(img.shape[0]):
-            flat = img[c].flatten()
-            low_val = flat.kthvalue(int(flat.numel() * low)).values
-            high_val = flat.kthvalue(int(flat.numel() * high)).values
-            stretched[c] = torch.clamp((img[c] - low_val) / (high_val - low_val + 1e-6), 0, 1)
-        return stretched
-
-
-
-class SingleChannelTransform:
-    def __init__(self, target_height=64, max_width=None, train=True, sharpen_strength=1.5, contrast_clip=(0.01, 0.99)):
-        self.target_height = target_height
-        self.max_width = max_width
-        self.train = train
-        self.sharpen_strength = sharpen_strength
-        self.contrast_clip = contrast_clip
-        self.to_tensor = T.ToTensor()
-
-        # Augmentations only during training
-        self.augment = torch.nn.Sequential(
-            KA.RandomAffine(degrees=2.5, translate=(0.02, 0.02), p=0.5),
-            KA.RandomBrightness(0.1, p=0.5),
-            KA.RandomContrast(0.1, p=0.5),
-            KA.RandomGaussianNoise(mean=0.0, std=0.01, p=0.2),
-        )
-
-    def __call__(self, img):
-        # Step 1: Convert to tensor
-        if isinstance(img, Image.Image):  
-            tensor = self.to_tensor(img).unsqueeze(0)  # [1, C, H, W]
-        elif isinstance(img, np.ndarray):
-            tensor = torch.from_numpy(img).float().unsqueeze(0)
-            if tensor.ndim == 3 and tensor.shape[0] != 1:
-                tensor = tensor.mean(dim=0, keepdim=True).unsqueeze(0)  
-        elif isinstance(img, torch.Tensor):
-            if img.ndim == 3:  
-                tensor = img.unsqueeze(0)  
-            elif img.ndim == 4:
-                tensor = img  
-            else:
-                raise ValueError(f"Unexpected tensor shape: {img.shape}")
-        else:
-            raise TypeError(f"Unsupported image type: {type(img)}")
-
-        # Step 2: Ensure grayscale
-        if tensor.shape[1] == 3:
-            gray = KC.rgb_to_grayscale(tensor)
-        else:
-            gray = tensor  
-
-        # Step 3: Proportional resize
-        gray = self._resize_proportional(gray)
-
-        # Step 4: Augment (train only)
-        if self.train:
-            gray = self.augment(gray)
-
-        # Step 5: Contrast normalization
-        gray = self._contrast_stretch(gray, *self.contrast_clip)
-
-        # Step 6: Sharpen
-        blurred = KF.gaussian_blur2d(gray, (3, 3), (1.0, 1.0))
-        sharpened = gray + self.sharpen_strength * (gray - blurred)
-        sharpened = torch.clamp(sharpened, 0.0, 1.0)
-
-        # Output single channel [1, H, W]
-        return sharpened.squeeze(0)
-
-    def _resize_proportional(self, img):
-        """Resize keeping aspect ratio to target height."""
-        _, _, h, w = img.shape
-        scale = self.target_height / h
-        new_w = int(round(w * scale))
-        if self.max_width:
-            new_w = min(new_w, self.max_width)
-        return KG.resize(img, (self.target_height, new_w), interpolation='bilinear')
-
-    def _contrast_stretch(self, img, low=0.01, high=0.99):
-        if img.dim() == 4:  # batch mode
-            return torch.stack([self._contrast_stretch(single_img, low, high) for single_img in img])
-
-        stretched = torch.empty_like(img)
-        for c in range(img.shape[0]):
-            flat = img[c].flatten()
-            low_val = flat.kthvalue(int(flat.numel() * low)).values
-            high_val = flat.kthvalue(int(flat.numel() * high)).values
-            stretched[c] = torch.clamp((img[c] - low_val) / (high_val - low_val + 1e-6), 0, 1)
-        return stretched
-
-
+  
 
 # -----------------------------
 # Line Segmentation
@@ -363,7 +163,7 @@ class SingleChannelTransform:
 # albumentations
 # several different function to try  
 
-def get_train_transform(image_height=32, image_max_width=2048):
+""" def get_train_transform(image_height=32, image_max_width=2048):
     return A.Compose([
         A.Resize(height=image_height, width=image_max_width, interpolation=1, always_apply=True),  # Resize to fixed height
         A.OneOf([
@@ -382,7 +182,7 @@ def get_train_transform(image_height=32, image_max_width=2048):
         ToTensorV2()
     ])
 
-
+ """
 
 # kornia
 
@@ -465,10 +265,45 @@ def wait_until_enough_gpu_memory(min_memory_available, max_retries=10, sleep_tim
 
 
 #---------------------------------------------------------------------------------------------------
+from PIL import Image, ImageOps
+import os
+
+def pad_to_required_width(img, target_length, downsample_factor=32, pad_color=255):
+    min_width = target_length * downsample_factor
+    w, h = img.size
+    if w < min_width:
+        pad_width = min_width - w
+        # Pad right only
+        padding = (0, 0, pad_width, 0)
+        img = ImageOps.expand(img, padding, fill=pad_color)
+    return img
+
+# Example usage
+#img = Image.open("sample.png").convert("L")
+#text = "some label here"
+#padded_img = pad_to_required_width(img, target_length=len(text))
+#padded_img.save("sample_padded.png")
 
 ##--------------------------------------------------------
 ## ctc 
 ##--------------------------------------------------------
+
+def collate_fn(batch):
+    images, texts, widths = zip(*batch)
+    max_w = max(widths)
+    
+    padded_imgs = []
+    for img in images:
+        pad_w = max_w - img.shape[2]
+        padded = torch.nn.functional.pad(img, (0, pad_w, 0, 0), value=1.0)  # pad right with white
+        padded_imgs.append(padded)
+    target_lengths = torch.tensor([len(label) for label in texts], dtype=torch.long)
+    targets = torch.cat(texts)
+    input_lengths = torch.tensor([img.shape[-1] for img in images], dtype=torch.long)
+
+    return torch.stack(padded_imgs),targets, input_lengths,target_lengths
+
+#    return padded_images_tensor, targets, input_lengths, target_lengths """
 
 
 def ctc_loss(y_pred, labels, input_lengths, label_lengths):
@@ -500,55 +335,107 @@ def ctc_loss(y_pred, labels, input_lengths, label_lengths):
         reduction='mean'
     )
 
+def resize_keep_aspect(img, target_h=64):
+    """
+    Resize image to target height while keeping aspect ratio.
+    Does not pad or crop — only resizes proportionally.
 
+    Args:
+        img: input image (grayscale or color)
+        target_h: desired height
+    """
+    h, w = img.shape[:2]
 
+    # Compute new width maintaining aspect ratio
+    new_w = int(w * (target_h / h))
+    resized = cv2.resize(img, (new_w, target_h), interpolation=cv2.INTER_CUBIC)
 
-def ctc_collate_fn(batch, total_stride=4):
-    images, labels = zip(*batch)
-    
-    max_w = max(img.shape[-1] for img in images)
-    C, H = images[0].shape[:2]  # assume consistent channels & height
-    
-    padded_images_tensor = torch.zeros(len(images), C, H, max_w, dtype=images[0].dtype)
-    for i, img in enumerate(images):
-        padded_images_tensor[i, :, :, :img.shape[-1]] = img
-    
-    targets = torch.cat(labels)
-    input_lengths = torch.tensor([img.shape[-1] // total_stride for img in images], dtype=torch.long)
-    target_lengths = torch.tensor([len(label) for label in labels], dtype=torch.long)
-
-    return padded_images_tensor, targets, input_lengths, target_lengths
-
-
-
+    return resized
 
 #---------------------------------------------------------------------------------------------------
 #
 ##--------------------------------------------------------
 ## classes 
 ##--------------------------------------------------------
-import os
-from torch.utils.data import Dataset
-from PIL import Image
-import numpy as np
-import torch
+import math
+import random
+from torch.utils.data import Sampler
 
-import os
-from torch.utils.data import Dataset
-from PIL import Image
-import torch
-import numpy as np
+class DualChannelLaplaceTransform:
+    def __init__(self, target_height=64, max_width=None, 
+                 train=True, output_channels=1,  # <-- NEW FLAG
+                 sharpen_strength=1.5, contrast_clip=(0.01, 0.99)):
+        """
+        output_channels: 1 (single channel) or 2 (sharpened + laplace)
+        """
+        self.target_height = target_height
+        self.max_width = max_width
+        self.train = train
+        self.output_channels = output_channels
+        self.sharpen_strength = sharpen_strength
+        self.contrast_clip = contrast_clip
+        self.to_tensor = T.ToTensor()
 
-import os
-from torch.utils.data import Dataset
-from PIL import Image
-import torch
-import numpy as np
-import os
-from torch.utils.data import Dataset
-from PIL import Image
-import torch
-import numpy as np
+        # Augmentations only used during training
+        self.augment = torch.nn.Sequential(
+            KA.RandomAffine(degrees=2.5, translate=(0.02, 0.02), p=0.5),
+            KA.RandomBrightness(0.1, p=0.5),
+            KA.RandomContrast(0.1, p=0.5),
+            KA.RandomGaussianNoise(mean=0.0, std=0.01, p=0.2),
+        )
+
+    def _contrast_stretch(self, img, low=0.01, high=0.99):
+        if img.dim() == 4:
+            return torch.stack([self._contrast_stretch(single_img, low, high) for single_img in img])
+        stretched = torch.empty_like(img)
+        for c in range(img.shape[0]):
+            flat = img[c].flatten()
+            low_val = flat.kthvalue(int(flat.numel() * low)).values
+            high_val = flat.kthvalue(int(flat.numel() * high)).values
+            stretched[c] = torch.clamp((img[c] - low_val) / (high_val - low_val + 1e-6), 0, 1)
+        return stretched
+
+    def __call__(self, img):
+        
+       
+
+        # Step 1: Convert to tensor
+        if isinstance(img, Image.Image):
+            tensor = self.to_tensor(img).unsqueeze(0)  # [1,C,H,W]
+        elif isinstance(img, np.ndarray):
+           tensor = torch.from_numpy(img).float().unsqueeze(0)
+        elif isinstance(img, torch.Tensor):
+            if img.ndim == 3:
+                tensor = img.unsqueeze(0)
+            else:
+                tensor = img
+        else:
+            raise TypeError(f"Unsupported image type: {type(img)}")
+
+        # Step 2: Grayscale
+        if tensor.shape[1] == 3:
+            gray = KC.rgb_to_grayscale(tensor)
+        else:
+            gray = tensor
+
+        # avoid resizing - stretching or proportsional 
+        # Step 3: Proportional resize 
+        #gray = self._resize_proportional(gray)
+
+        # Step 4: Augmentation (if training)
+        if self.train:
+            gray = self.augment(gray)
+
+        # Step 5: Contrast stretch
+        gray = self._contrast_stretch(gray, *self.contrast_clip)
+
+        # Step 6: Sharpen
+        blurred = KF.gaussian_blur2d(gray, (3, 3), (1.0, 1.0))
+        sharpened = torch.clamp(gray + self.sharpen_strength * (gray - blurred), 0.0, 1.0)
+
+        return sharpened.squeeze(0)  # [1,H,W] -> remove batch dim for dataset __getitem__
+                
+
 
 class OCRDataset(Dataset):
     def __init__(self, label_file, image_dir, transform=None):
@@ -565,8 +452,12 @@ class OCRDataset(Dataset):
 
         with open(label_file, 'r', encoding='utf-8') as f:
             for line in f:
-                image_name, text = line.strip().split("|")
-                self.samples.append((image_name, text))
+                try:
+                    image_name, text = line.strip().split("|")
+                    self.samples.append((image_name, text))
+                except:
+                    print(line)
+                    
 
     def __len__(self):
         return len(self.samples)
@@ -577,11 +468,12 @@ class OCRDataset(Dataset):
 
         # Load grayscale image
         img_pil = Image.open(img_path).convert("L")
-
+        img_pil = pad_to_required_width(img_pil, target_length=len(text))
+        w, h = img_pil.size
         # Convert to tensor [1, H, W]
         img_np = np.array(img_pil, dtype=np.float32)
         img_tensor = torch.from_numpy(img_np).unsqueeze(0)  # [1, H, W]
-
+        
         # Apply transform if provided
         if self.transform:
             img_tensor = self.transform(img_tensor)
@@ -591,19 +483,24 @@ class OCRDataset(Dataset):
             [char_to_idx[c] for c in text],
             dtype=torch.long
         )
+        
+        return img_tensor, label_tensor, w
 
-        return img_tensor, label_tensor
 
-
-
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torchvision import models
+import torch
+import torch.nn as nn
+import torchvision.models as models
 
 class CRNN(nn.Module):
-    def __init__(self, num_classes, img_height=64, img_width=2048, in_channels=1, freeze_cnn=False):
+    def __init__(self, num_classes, img_height=64, in_channels=1, freeze_cnn=False):
         super(CRNN, self).__init__()
         self.normalize = transforms.Normalize(mean=[0.5] * in_channels, std=[0.5] * in_channels)
         
         self.img_height = img_height
-        self.img_width = img_width
         self.in_channels = in_channels
         self.num_classes = num_classes
 
@@ -616,8 +513,10 @@ class CRNN(nn.Module):
                 param.requires_grad = False
 
         with torch.no_grad():
-            dummy_input = torch.zeros(1, in_channels, img_height, img_width)
-            dummy_output = self.cnn(dummy_input)
+            #dummy_input = torch.zeros(1, in_channels, 100)
+            dummy = torch.zeros(1, in_channels, img_height, 100)  # 100 = arbitrary width
+
+            dummy_output = self.cnn(dummy)
             _, c, h, w = dummy_output.size()
             self.sequence_length = w
             self.feature_dim = c  # height collapsed to 1 later
@@ -646,13 +545,14 @@ class CRNN(nn.Module):
         return F.log_softmax(x, dim=2)
 
 
+
 #---------------------------------------------------------------------------------------------------
 
 ## training / execution of model 
 
 
 #init
-model = CRNN(num_classes=num_classes,img_height=64,img_width=2048,in_channels=1)
+model = CRNN(num_classes=num_classes,img_height=64,in_channels=1)
 
 
 
@@ -662,12 +562,11 @@ model = CRNN(num_classes=num_classes,img_height=64,img_width=2048,in_channels=1)
 
 
 
-exe = True
-epocs_iterat = 30
+exe = False
+epocs_iterat = 500
 
 
 if(exe):
-    #transform = DualChannelLaplaceTransform(resize=(32, 2048))
     transform = DualChannelLaplaceTransform(train=False)
 
    # optimizer = torch.optim.Adam(model.parameters())  # Now includes RNN and FC
@@ -677,13 +576,68 @@ if(exe):
         shuffle=True,
         collate_fn=ctc_collate_fn) """
     
-    state = model.load_state_dict(torch.load("/home/martinez/TUS/DISSERT/models/crnn_ctc_model_DvJhB_30_ep_29.pth"))  # or your path
+    state = model.load_state_dict(torch.load("/home/martinez/TUS/DISSERT/models/crnn_ctc_model_WvNqO_420_ep_387.pth"))  # or your path
     model = model.to("cuda")
     print("state keys:")
 
     
-    image = Image.open('/home/martinez/TUS/DISSERT/data/customImages/enhanced_image.jpg').convert('RGB')  # grayscale
-    img_tensor = transform(image).unsqueeze(0).cuda() 
+    #
+    # image = Image.open('/home/martinez/TUS/DISSERT/data/latest/all_images2/Bennett__8e_down.png').convert('L')  # grayscale
+    #file = '/home/martinez/TUS/DISSERT/data/latest/all_images2/Bennett__8e_down.png'
+    file = '/home/martinez/TUS/DISSERT/data/customImages/lick.png'
+    #enchance input image ,using RealESRGANer outscale it 8, image will be rebuilt with some of the realesrg magic 
+    # and then downsample it to height 64 , need for our ocr model
+
+ # Step 1: Load image (OpenCV loads in BGR format)
+    img = cv2.imread(file, cv2.IMREAD_COLOR)
+
+    # Step 2: Create the model
+    mod = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
+
+    # Step 3: Create the RealESRGANer instance
+    upsampler = RealESRGANer(
+        scale=4,
+        model_path='/home/martinez/d/weights/RealESRGAN_x4plus.pth', 
+        model=mod,
+        tile=0,  # Set to >0 for tiled inference on large images
+        tile_pad=10,
+        pre_pad=0,
+        half=False  # Set True if using half-precision and CUDA
+    )
+
+    # Step 4: Super-resolve
+    output, _ = upsampler.enhance(img, outscale=8)
+    print("Original shape:", img.shape)
+    print("Upscaled shape:", output.shape)
+    #target_w, target_h = 32, 64
+    #downscaled = cv2.resize(output, (target_w, target_h), interpolation=cv2.INTER_AREA)
+    output_proportional = resize_keep_aspect(output, target_h=64)  #return 3 channel RGB
+
+    #?? can we increase training data from height 64 to 98 ? 
+
+    gray = cv2.cvtColor(output_proportional, cv2.COLOR_BGR2GRAY)  # or COLOR_RGB2GRAY depending on your color format
+   # gray = cv2.cvtColor(output_proportional, cv2.COLOR_BGR2GRAY)  # or COLOR_RGB2GRAY depending on your color format
+    tensor = torch.from_numpy(gray).float() / 255.0  # [H, W]
+    tensor = tensor.unsqueeze(0).unsqueeze(0)        # [B=1, C=1, H, W]
+    # Convert to tensor
+    #tensor = torch.from_numpy(gray).float() / 255.0    # normalize 0–1
+    #tensor = tensor.unsqueeze(0).unsqueeze(0)   
+    #maybe we should train on RGB ?
+
+    #tmp solution 
+    #cv2.imwrite("/tmp/enchcned_downsample.png", output_proportional)
+
+    #image = Image.open('/home/martinez/TUS/DISSERT/data/latest/all_images2/Bennett__8e_down.png').convert('L')  # grayscale
+
+    #image2 = Image.open('/home/martinez/TUS/DISSERT/data/customImages/a01-000u-00.png').convert('RGB')  # grayscale
+    #img_tensor = transform(image2).unsqueeze(0).cuda() 
+
+    img_tensor = transform(tensor).unsqueeze(0).cuda() 
+
+   
+    from torchvision.transforms.functional import to_pil_image
+    to_pil_image(img_tensor[0]).show(title="Channel 0 (Sharpened)")
+
     #from torchvision.transforms.functional import to_pil_image
    #to_pil_image(img_tensor[0]).show(title="Channel 0 (Sharpened)")
 
@@ -723,11 +677,8 @@ if(exe):
 
 else:
 
- 
-
-# Create dataset
-    import random
-    import string
+ # Create dataset
+    
     s = string.ascii_letters
 
     random_level2 = random.choices(s, k=5)
@@ -736,19 +687,19 @@ else:
     transform = DualChannelLaplaceTransform(train=True)
  
     train_dataset = OCRDataset(
-    label_file="data/latest/matchingLabelFileV2.txt",
-    image_dir="data/latest/images_all/",
-    #char_to_idx=char_to_idx,
-    #laplace_dir="data/latest/lapace_all/",
+   # label_file="data/latest/matchingLabelFileV2.txt",
+   # image_dir="data/latest/images_all/",
+    label_file="data/latest/ForTraining/targetLabels.txt",
+    image_dir="data/latest/ForTraining/allImg/",
     transform=transform
 )
-
+    #sampler = WidthBucketSampler(train_dataset, batch_size=8, num_buckets=10, shuffle=True)
 
     dataloader = DataLoader(
         train_dataset,
-        batch_size=16,
-        shuffle=True,
-        collate_fn=ctc_collate_fn,
+        batch_size=8,
+        shuffle=True, 
+        collate_fn=collate_fn,
         num_workers=os.cpu_count(),       # Suggestion: speed up data loading
         pin_memory=True                   # Optional: improves transfer to GPU if using CUDA
     )
@@ -780,15 +731,16 @@ else:
     
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:1024"
     #train(model, dataloader, optimizer, ctc_loss, device, 2);
+    min_memory_available = 2 * 1024 * 1024 * 1024  # 2GB
 
-
+    clear_gpu_memory()
+    wait_until_enough_gpu_memory(min_memory_available)
     best_val_loss = float('inf')
     # Usage example
     for epoch in range(epocs_iterat):  # or more
         model.train()
         total_loss = 0
 
-        min_memory_available = 2 * 1024 * 1024 * 1024  # 2GB
         #clear_gpu_memory()
         #wait_until_enough_gpu_memory(min_memory_available)
 

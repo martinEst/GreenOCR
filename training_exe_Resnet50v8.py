@@ -708,11 +708,27 @@ else:
     criterion = nn.CTCLoss(blank=0, zero_infinity=True)
 
     # Define optimizer
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)  
+    #optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)  
 
 
     images, targets, input_lengths, target_lengths = next(iter(dataloader))
+       # Load
+    checkpoint = torch.load("/home/martinez/TUS/DISSERT/models/crnn_ctc_model_vrdVe_500_ep_8.pth", map_location="cuda")
+    #checkpoint = torch.load("crnn_ctc_model_CEQgf_500_ep_1.pth", map_location="cuda")
 
+    model.load_state_dict(checkpoint)
+    #optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=3e-4)  
+    optimizer = torch.optim.Adam(model.parameters(), lr=3e-4, weight_decay=2e-4)  
+
+    #optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=50, gamma=0.1)
+    #model.load_state_dict(checkpoint["model_state_dict"])
+    #optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    #start_epoch = checkpoint["epoch"] + 1
+    #loss = checkpoint["loss"]
+
+
+    
     #optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
     device = torch.device("cuda")
@@ -760,9 +776,9 @@ else:
                 #input_lengths = input_lengths.to(device)
                 target_lengths = target_lengths.to(device).clone().detach()
                 #target_lengths = target_lengths.to(device)
-                print("target_lengths dtype:", target_lengths.dtype)
-                print("target_lengths values:", target_lengths)
-                print("Sum:", target_lengths.sum())
+                #print("target_lengths dtype:", target_lengths.dtype)
+                #print("target_lengths values:", target_lengths)
+                #print("Sum:", target_lengths.sum())
 
                 if targets.dim() == 2:
                     # Still batched, need to flatten
@@ -806,7 +822,7 @@ else:
                 B = log_probs.size(1)
                 #input_lengths = torch.full(size=(B,), fill_value=T, dtype=torch.long).to(device)
                 input_lengths = torch.full((B,), log_probs.size(0), dtype=torch.long).to(device)
-                print("Sum4:", target_lengths.sum())
+                #print("Sum4:", target_lengths.sum())
                 if any(target_lengths > input_lengths):
                     print(f"⚠️ Skipping batch: some target_lengths > T={T}")
                     continue
@@ -859,7 +875,8 @@ else:
         avg_loss = total_loss / len(dataloader)
         if avg_loss < best_val_loss:
             best_val_loss = avg_loss
-            print("saving epocs")
+            print("saving epocs : /home/martinez/TUS/DISSERT/models/crnn_ctc_model_"+res+"_"+str(epocs_iterat)+"_ep_"+str(epoch))
+            print(f"  ✅ Saved new best model (val_loss={best_val_loss:.4f})")
             torch.save(model.state_dict(), "/home/martinez/TUS/DISSERT/models/crnn_ctc_model_"+res+"_"+str(epocs_iterat)+"_ep_"+str(epoch)+".pth")
         print(f"Epoch {epoch+1}, Loss: {avg_loss:.4f}")
 

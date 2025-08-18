@@ -504,7 +504,9 @@ class CRNN(nn.Module):
         self.in_channels = in_channels
         self.num_classes = num_classes
 
-        resnet = models.resnet50(pretrained=False)
+
+        resnet = models.resnet101(pretrained=False)
+
         resnet.conv1 = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
         self.cnn = nn.Sequential(*list(resnet.children())[:-2])
 
@@ -521,8 +523,10 @@ class CRNN(nn.Module):
             self.sequence_length = w
             self.feature_dim = c  # height collapsed to 1 later
 
+        
         self.lstm1 = nn.LSTM(self.feature_dim, 256, bidirectional=True, batch_first=True)
         self.lstm2 = nn.LSTM(512, 256, bidirectional=True, batch_first=True)
+        self.lstm3 = nn.LSTM(512, 256, bidirectional=True, batch_first=True)
         self.fc = nn.Linear(512, num_classes)
 
     def forward(self, x):
@@ -713,12 +717,13 @@ else:
 
     images, targets, input_lengths, target_lengths = next(iter(dataloader))
        # Load
-    checkpoint = torch.load("/home/martinez/TUS/DISSERT/models/crnn_ctc_model_vrdVe_500_ep_8.pth", map_location="cuda")
+    #checkpoint = torch.load("/home/martinez/TUS/DISSERT/models/crnn_ctc_model_vrdVe_500_ep_8.pth", map_location="cuda")
     #checkpoint = torch.load("crnn_ctc_model_CEQgf_500_ep_1.pth", map_location="cuda")
 
-    model.load_state_dict(checkpoint)
+    #model.load_state_dict(checkpoint)
+    
     #optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=3e-4)  
-    optimizer = torch.optim.Adam(model.parameters(), lr=3e-4, weight_decay=2e-4)  
+    optimizer = torch.optim.Adam(model.parameters(), lr=8e-4, weight_decay=2e-4)  
 
     #optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=50, gamma=0.1)

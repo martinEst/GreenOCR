@@ -7,7 +7,7 @@ import random
 import numpy as np
 import torch.nn as nn
 
-
+import sys
 import kornia as K
 import kornia.color as KC
 import kornia.filters as KF
@@ -683,20 +683,37 @@ else:
 
  # Create dataset
     
+    dataSrc = "En"  #default
+
+    if len( sys.argv ) == 2:
+        dataSrc = 'custom' if 'custom' in sys.argv[1] else dataSrc
+        
+
+    print(dataSrc)
+
+
     s = string.ascii_letters
 
     random_level2 = random.choices(s, k=5)
     res = ''.join(random_level2)
 
     transform = DualChannelLaplaceTransform(train=True)
- 
-    train_dataset = OCRDataset(
-   # label_file="data/latest/matchingLabelFileV2.txt",
-   # image_dir="data/latest/images_all/",
-    label_file="data/latest/ForTraining/targetLabels.txt",
-    image_dir="data/latest/ForTraining/allImg/",
-    transform=transform
-)
+    train_dataset = None
+    
+    if dataSrc == 'En' :
+        train_dataset = OCRDataset(
+    
+        label_file="data/latest/ForTraining/targetLabels.txt",
+        image_dir="data/latest/ForTraining/allImg/",
+        transform=transform
+    )
+    else:     ##can specify that its "custom" dataset. 
+        train_dataset = OCRDataset(
+    
+        label_file="data/latest/ForTraining/targetLabels.txt",
+        image_dir="data/latest/ForTraining/allImg/",
+        transform=transform
+        )
     #sampler = WidthBucketSampler(train_dataset, batch_size=8, num_buckets=10, shuffle=True)
 
     dataloader = DataLoader(
@@ -708,25 +725,36 @@ else:
         pin_memory=True                   # Optional: improves transfer to GPU if using CUDA
     )
 
+
+    print("exit")
+    import sys
+    sys.exit()
+
+
     # Define loss function
     criterion = nn.CTCLoss(blank=0, zero_infinity=True)
 
     # Define optimizer
-    #optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)  
+    
+    #so far super slowley but eventually best improves
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)  
 
 
     images, targets, input_lengths, target_lengths = next(iter(dataloader))
-       # Load
+ 
+    checkpoint = torch.load("/home/martinez/TUS/DISSERT/models/crnn_ctc_model_DSZIO_500_ep_29.pth", map_location="cuda")
+
     #checkpoint = torch.load("/home/martinez/TUS/DISSERT/models/crnn_ctc_model_vrdVe_500_ep_8.pth", map_location="cuda")
     #checkpoint = torch.load("crnn_ctc_model_CEQgf_500_ep_1.pth", map_location="cuda")
 
-    #model.load_state_dict(checkpoint)
+    model.load_state_dict(checkpoint)
     
+    #aggressive warm ups
     #optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=3e-4)  
-    optimizer = torch.optim.Adam(model.parameters(), lr=8e-4, weight_decay=2e-4)  
+    #optimizer = torch.optim.Adam(model.parameters(), lr=8e-4, weight_decay=2e-4)  
 
     #optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=50, gamma=0.1)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.1)
     #model.load_state_dict(checkpoint["model_state_dict"])
     #optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
     #start_epoch = checkpoint["epoch"] + 1

@@ -575,9 +575,17 @@ model = CRNN(num_classes=num_classes,img_height=64,in_channels=1)
 
 exe = True
 
-
+pathModel = None
+if len( sys.argv ) == 2:
+        pathModel = sys.argv[1]
+else:
+    print("please provide path to model (ex. ptyon exe_t.py /home/martinez/TUS/DISSERT/models/crnn_ctc_model_LqybM_500_ep_30.pth )")
+    sys.exit()
+    
 
 if(exe):
+
+    
     transform = DualChannelLaplaceTransform(train=False)
 
    # optimizer = torch.optim.Adam(model.parameters())  # Now includes RNN and FC
@@ -587,7 +595,7 @@ if(exe):
         shuffle=True,
         collate_fn=ctc_collate_fn) """
     
-    state = model.load_state_dict(torch.load("models/crnn_ctc_model_LqybM_500_ep_24.pth"))  # or your path
+    state = model.load_state_dict(torch.load(pathModel))  # or your path
     model = model.to("cuda")
     print("state keys:")
 

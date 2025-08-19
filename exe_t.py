@@ -573,13 +573,8 @@ model = CRNN(num_classes=num_classes,img_height=64,in_channels=1)
 
 
 
-#---------------------------------------------------------------------------------------------------
-# exe = True # means model is applied 
+exe = True
 
-
-
-exe = False
-epocs_iterat = 500
 
 
 if(exe):
@@ -592,19 +587,19 @@ if(exe):
         shuffle=True,
         collate_fn=ctc_collate_fn) """
     
-    state = model.load_state_dict(torch.load("/home/martinez/TUS/DISSERT/models/crnn_ctc_model_WvNqO_420_ep_387.pth"))  # or your path
+    state = model.load_state_dict(torch.load("models/crnn_ctc_model_LqybM_500_ep_24.pth"))  # or your path
     model = model.to("cuda")
     print("state keys:")
 
     
-    #
-    # image = Image.open('/home/martinez/TUS/DISSERT/data/latest/all_images2/Bennett__8e_down.png').convert('L')  # grayscale
-    #file = '/home/martinez/TUS/DISSERT/data/latest/all_images2/Bennett__8e_down.png'
-    file = '/home/martinez/TUS/DISSERT/data/customImages/lick.png'
+    
+    
+    file = 'test_images/a01-000u-00.png'
+    
     #enchance input image ,using RealESRGANer outscale it 8, image will be rebuilt with some of the realesrg magic 
     # and then downsample it to height 64 , need for our ocr model
 
- # Step 1: Load image (OpenCV loads in BGR format)
+    # Step 1: Load image (OpenCV loads in BGR format)
     img = cv2.imread(file, cv2.IMREAD_COLOR)
 
     # Step 2: Create the model
@@ -683,247 +678,4 @@ if(exe):
     joined_text = ''.join(ocrTxt)
     cleaned_text = ' '.join(joined_text.split())
     print(cleaned_text)
-    print("exit")
-    import sys
-    sys.exit()
-
-
-
-
-
-else:
-
- # Create dataset
     
-    dataSrc = "En"  #default
-
-    if len( sys.argv ) == 2:
-        dataSrc = 'custom' if 'custom' in sys.argv[1] else dataSrc
-        
-
-    print(dataSrc)
-
-
-    s = string.ascii_letters
-
-    random_level2 = random.choices(s, k=5)
-    res = ''.join(random_level2)
-
-    transform = DualChannelLaplaceTransform(train=True)
-    train_dataset = None
-    
-    if dataSrc == 'En' :
-        train_dataset = OCRDataset(
-            
-        label_file="data/English_data/IAM64_train.txt",
-        image_dir="data/English_data/IAM64-new/train/",
-        transform=transform,
-        dataSrc='En'
-    )
-    else:     ##can specify that its "custom" dataset. 
-        train_dataset = OCRDataset(
-    
-        label_file="data/Custom/trainingImages/targetLabels.txt",
-        image_dir="data/Custom/trainingImages/allImg/",
-        transform=transform,
-        dataSrc='custom'
-        )
-    #sampler = WidthBucketSampler(train_dataset, batch_size=8, num_buckets=10, shuffle=True)
-
-    dataloader = DataLoader(
-        train_dataset,
-        batch_size=8,
-        shuffle=True, 
-        collate_fn=collate_fn,
-        num_workers=os.cpu_count(),       # Suggestion: speed up data loading
-        pin_memory=True                   # Optional: improves transfer to GPU if using CUDA
-    )
-
-
-    #print("exit")
-    #import sys
-    #sys.exit()
-
-
-    # Define loss function
-    criterion = nn.CTCLoss(blank=0, zero_infinity=True)
-
-    # Define optimizer
-    
-    #so far super slowley but eventually best improves
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)  
-
-
-    images, targets, input_lengths, target_lengths = next(iter(dataloader))
- 
-   # checkpoint = torch.load("/home/martinez/TUS/DISSERT/models/crnn_ctc_model_DSZIO_500_ep_29.pth", map_location="cuda")
-
-    #checkpoint = torch.load("/home/martinez/TUS/DISSERT/models/crnn_ctc_model_vrdVe_500_ep_8.pth", map_location="cuda")
-    #checkpoint = torch.load("crnn_ctc_model_CEQgf_500_ep_1.pth", map_location="cuda")
-
-    #model.load_state_dict(checkpoint)
-    
-    #aggressive warm ups
-    #optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=3e-4)  
-    #optimizer = torch.optim.Adam(model.parameters(), lr=8e-4, weight_decay=2e-4)  
-
-    #optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.1)
-    #model.load_state_dict(checkpoint["model_state_dict"])
-    #optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-    #start_epoch = checkpoint["epoch"] + 1
-    #loss = checkpoint["loss"]
-
-
-    
-    #optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-
-    device = torch.device("cuda")
-    model = model.to(device)    
-
-    
-    """  from torchvision.transforms.functional import to_pil_image
-
-        img_single = img_tensor[0]
-
-        # View each channel separately
-        to_pil_image(img_single[0]).show(title="Channel 0 (Sharpened)")
-        to_pil_image(img_single[1]).show(title="Channel 1 (Laplace)")
-    
-        """
-    
-    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:1024"
-    #train(model, dataloader, optimizer, ctc_loss, device, 2);
-    min_memory_available = 2 * 1024 * 1024 * 1024  # 2GB
-
-    clear_gpu_memory()
-    wait_until_enough_gpu_memory(min_memory_available)
-    best_val_loss = float('inf')
-    # Usage example
-    for epoch in range(epocs_iterat):  # or more
-        model.train()
-        total_loss = 0
-
-        #clear_gpu_memory()
-        #wait_until_enough_gpu_memory(min_memory_available)
-
-        for images, targets, input_lengths, target_lengths in dataloader:
-            clear_gpu_memory()
-            wait_until_enough_gpu_memory(min_memory_available)
- 
-            try:
-                #torch.cuda.memory_summary(device=None, abbreviated=False)
-                #torch.cuda.empty_cache()
-                if images is None:
-                    print("⚠️ Skipping None batch")
-                    continue
-
-                images = images.to(device)
-                #targets = targets.to(device)
-                #input_lengths = input_lengths.to(device)
-                target_lengths = target_lengths.to(device).clone().detach()
-                #target_lengths = target_lengths.to(device)
-                #print("target_lengths dtype:", target_lengths.dtype)
-                #print("target_lengths values:", target_lengths)
-                #print("Sum:", target_lengths.sum())
-
-                if targets.dim() == 2:
-                    # Still batched, need to flatten
-                    clean_targets = []
-                    for i in range(targets.size(0)):
-                        l = target_lengths[i]
-                        t = targets[i]
-                        if t.dim() == 0:
-                            t = t.unsqueeze(0)
-                        clean_targets.append(t[:l])
-                    clean_targets = torch.cat(clean_targets).to(device)
-
-                elif targets.dim() == 1:
-                    # Already flat — just check it's consistent
-                    if targets.shape[0] != target_lengths.sum():
-                        print("❌ Already flat targets but lengths don't match")
-                        continue
-                    clean_targets = targets.to(device)
-
-                else:
-                    print("❌ Unknown target shape:", targets.shape)
-                    continue
-
-                # Final safety check
-                if clean_targets.numel() == 0:
-                    print("⚠️ Empty clean_targets — skipping batch.")
-                    continue
-
-                # Set final targets to clean version
-                targets = clean_targets
-
-            
-                logits = model(images)  # (B, T, C)
-                log_probs = F.log_softmax(logits, dim=2)  # Apply log softmax over classes (C)
-
-                # Permute to (T, B, C) for CTC loss
-                log_probs = log_probs.permute(1, 0, 2)  # (T, B, C)
-
-                # Input lengths (T should be log_probs.size(0) after permute)
-                T = log_probs.size(0)
-                B = log_probs.size(1)
-                #input_lengths = torch.full(size=(B,), fill_value=T, dtype=torch.long).to(device)
-                input_lengths = torch.full((B,), log_probs.size(0), dtype=torch.long).to(device)
-                #print("Sum4:", target_lengths.sum())
-                if any(target_lengths > input_lengths):
-                    print(f"⚠️ Skipping batch: some target_lengths > T={T}")
-                    continue
-                safe_targets = targets.detach()
-                safe_input_lengths = input_lengths.detach()
-                #safe_target_lengths = target_lengths.detach()
-                safe_target_lengths = target_lengths.detach().clone()
-                valid_indices = [i for i, l in enumerate(target_lengths) if l > 0]
-                # Apply filtering
-                images = images[valid_indices]
-                safe_targets = torch.cat([safe_targets[i].unsqueeze(0) for i in valid_indices], dim=0) if safe_targets.ndim > 1 else safe_targets
-                safe_input_lengths = safe_input_lengths[valid_indices]
-                safe_target_lengths = safe_target_lengths[valid_indices]
-
-
-                # Filter out samples with target_length == 0
-                valid_indices = [i for i, l in enumerate(safe_target_lengths) if l > 0]
-
-                #loss = ctc_loss(log_probs, safe_targets, safe_input_lengths, safe_target_lengths)
-                loss = ctc_loss_fn(log_probs, safe_targets, safe_input_lengths, safe_target_lengths)
-
-
-                # Compute loss safely
-                
-
-                if loss is not None:
-                    loss.backward()
-                    optimizer.step()
-                    optimizer.zero_grad()
-
-                elif torch.isnan(loss) or torch.isinf(loss):
-                        print("⚠️ Skipping invalid loss")
-                        continue
-                else:
-                    print("⚠️ Skipped batch due to invalid loss")
-                    continue
-                
-
-
-
-                assert targets.shape[0] == target_lengths.sum()
-                
-                total_loss += loss.item()
-            except RuntimeError as e:
-                print(f"🔥 Skipping batch due to error: {e}")
-                torch.cuda.empty_cache()
-                continue
-        
-
-        avg_loss = total_loss / len(dataloader)
-        if avg_loss < best_val_loss:
-            best_val_loss = avg_loss
-            print("saving epocs : models/crnn_ctc_model_"+res+"_"+str(epocs_iterat)+"_ep_"+str(epoch))
-            print(f"  ✅ Saved new best model (val_loss={best_val_loss:.4f})")
-            torch.save(model.state_dict(), "models/crnn_ctc_model_"+res+"_"+str(epocs_iterat)+"_ep_"+str(epoch)+".pth")
-        print(f"Epoch {epoch+1}, Loss: {avg_loss:.4f}")
-

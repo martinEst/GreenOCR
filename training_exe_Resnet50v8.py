@@ -703,15 +703,15 @@ else:
     if dataSrc == 'En' :
         train_dataset = OCRDataset(
     
-        label_file="data/latest/ForTraining/targetLabels.txt",
-        image_dir="data/latest/ForTraining/allImg/",
+        label_file="data/English_data/IAM64_train.txt",
+        image_dir="data/English_data/IAM64-new/train/",
         transform=transform
     )
     else:     ##can specify that its "custom" dataset. 
         train_dataset = OCRDataset(
     
-        label_file="data/latest/ForTraining/targetLabels.txt",
-        image_dir="data/latest/ForTraining/allImg/",
+        label_file="data/Custom/trainingImages/targetLabels.txt",
+        image_dir="data/Custom/trainingImages/allImg/",
         transform=transform
         )
     #sampler = WidthBucketSampler(train_dataset, batch_size=8, num_buckets=10, shuffle=True)

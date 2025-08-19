@@ -438,7 +438,7 @@ class DualChannelLaplaceTransform:
 
 
 class OCRDataset(Dataset):
-    def __init__(self, label_file, image_dir, transform=None):
+    def __init__(self, label_file, image_dir, transform=None, dataSrc = None):
         """
         Args:
             label_file (str): Path to label file in format 'image_name|text'
@@ -449,14 +449,26 @@ class OCRDataset(Dataset):
         self.image_dir = image_dir
         self.transform = transform
         self.samples = []
+        #format is folder name, filename , text 
+        if dataSrc == "En" :
+            with open(label_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    try:
+                        folder_image_name, text = line.strip().split(" ")
+                        folder, image_name =  folder_image_name.strip().split(",")
 
-        with open(label_file, 'r', encoding='utf-8') as f:
-            for line in f:
-                try:
-                    image_name, text = line.strip().split("|")
-                    self.samples.append((image_name, text))
-                except:
-                    print(line)
+                        self.samples.append((folder+"/"+image_name+".png", text))
+                    except:
+                        print(line)
+        else:   ##old way
+            with open(label_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    try:
+                        image_name, text = line.strip().split("|")
+                        self.samples.append((image_name, text))
+                    except:
+                        print(line)
+
                     
 
     def __len__(self):
@@ -702,17 +714,19 @@ else:
     
     if dataSrc == 'En' :
         train_dataset = OCRDataset(
-    
+            
         label_file="data/English_data/IAM64_train.txt",
         image_dir="data/English_data/IAM64-new/train/",
-        transform=transform
+        transform=transform,
+        dataSrc='En'
     )
     else:     ##can specify that its "custom" dataset. 
         train_dataset = OCRDataset(
     
         label_file="data/Custom/trainingImages/targetLabels.txt",
         image_dir="data/Custom/trainingImages/allImg/",
-        transform=transform
+        transform=transform,
+        dataSrc='custom'
         )
     #sampler = WidthBucketSampler(train_dataset, batch_size=8, num_buckets=10, shuffle=True)
 

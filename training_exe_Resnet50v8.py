@@ -454,7 +454,7 @@ class OCRDataset(Dataset):
             with open(label_file, 'r', encoding='utf-8') as f:
                 for line in f:
                     try:
-                        folder_image_name, text = line.strip().split(" ")
+                        folder_image_name, text = line.strip().split(" ",1)
                         folder, image_name =  folder_image_name.strip().split(",")
 
                         self.samples.append((folder+"/"+image_name+".png", text))
@@ -740,9 +740,9 @@ else:
     )
 
 
-    print("exit")
-    import sys
-    sys.exit()
+    #print("exit")
+    #import sys
+    #sys.exit()
 
 
     # Define loss function
@@ -756,12 +756,12 @@ else:
 
     images, targets, input_lengths, target_lengths = next(iter(dataloader))
  
-    checkpoint = torch.load("/home/martinez/TUS/DISSERT/models/crnn_ctc_model_DSZIO_500_ep_29.pth", map_location="cuda")
+   # checkpoint = torch.load("/home/martinez/TUS/DISSERT/models/crnn_ctc_model_DSZIO_500_ep_29.pth", map_location="cuda")
 
     #checkpoint = torch.load("/home/martinez/TUS/DISSERT/models/crnn_ctc_model_vrdVe_500_ep_8.pth", map_location="cuda")
     #checkpoint = torch.load("crnn_ctc_model_CEQgf_500_ep_1.pth", map_location="cuda")
 
-    model.load_state_dict(checkpoint)
+    #model.load_state_dict(checkpoint)
     
     #aggressive warm ups
     #optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=3e-4)  

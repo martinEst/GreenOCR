@@ -1,0 +1,2 @@
+model = models/crnn_ctc_model_lcbwz_500_ep_4.pth
+imgFolder = test_images

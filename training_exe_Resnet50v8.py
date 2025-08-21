@@ -234,29 +234,26 @@ def encode_text(text, char_to_idx):
     """Convert string to list of integer indices (no blank)"""
     return [char_to_idx[c] for c in text if c in char_to_idx]
 
-def decode_prediction(preds, idx_to_char, blank=0):
-    """Greedy decoding: remove duplicates and blanks"""
-    
+def ctc_greedy_decoder_batch(preds, idx_to_char, blank=0):
+    """
+    Greedy CTC decoding (batch version).
+    - Skips blanks
+    - Deduplicates only consecutive repeats (not across blanks)
+    - Uses idx_to_char to map indices back to string
+    """
     pred_texts = []
-    for pred in preds:  # each prediction is a list of indices
-        string = []
-        prev = None
-        
-        if pred != blank and pred != prev:
-            string.append(idx_to_char.get(pred, ''))
-            prev = pred
-        pred_texts.append(''.join(string))
+    for seq in preds:               # loop over batch
+        decoded = []
+        prev = blank
+        for p in seq:               # loop over timesteps
+            p = p.item() if hasattr(p, "item") else int(p)
+            if p != prev and p != blank:
+                decoded.append(idx_to_char.get(p, ''))
+            prev = p
+        pred_texts.append("".join(decoded))
     return pred_texts
 
 
-def ctc_greedy_decoder(preds, blank=0):
-    decoded = []
-    prev = blank
-    for p in preds:
-        if p != prev and p != blank:
-            decoded.append(p.item())
-        prev = p
-    return decoded
 
 
 
@@ -576,7 +573,7 @@ class CRNN(nn.Module):
         # Final prediction
         x = self.fc(x)
 
-        return F.log_softmax(x, dim=2)
+        return x
 
 
 
@@ -689,14 +686,13 @@ if(exe):
     
     output = model(img_tensor)  # Output: (T, B, num_classes)
     log_probs = torch.nn.functional.log_softmax(output, dim=2)
-      #  preds = ctc_greedy_decoder(log_probs)
       # Return single prediction
     preds = log_probs.argmax(dim=2)
     print(preds)
-    decoded_indices = ctc_greedy_decoder(preds[0])
+    decoded_indices = ctc_greedy_decoder_batch(preds[0])
     print(decoded_indices)
     
-    ocrTxt = decode_prediction (decoded_indices, idx_to_char)
+    ocrTxt = ctc_greedy_decoder_batch (decoded_indices, idx_to_char)
     
     joined_text = ''.join(ocrTxt)
     cleaned_text = ' '.join(joined_text.split())
@@ -774,7 +770,7 @@ else:
 
     images, targets, input_lengths, target_lengths = next(iter(dataloader))
  
-    checkpoint = torch.load("models/crnn_ctc_model_lcbwz_500_ep_32.pth", map_location="cuda")
+    #checkpoint = torch.load("models/crnn_ctc_model_gNJnJ_500_ep_18.pth", map_location="cuda")
 
     #checkpoint = torch.load("/home/martinez/TUS/DISSERT/models/crnn_ctc_model_vrdVe_500_ep_8.pth", map_location="cuda")
     #checkpoint = torch.load("crnn_ctc_model_CEQgf_500_ep_1.pth", map_location="cuda")
@@ -785,7 +781,15 @@ else:
     #optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=3e-4)  
     #optimizer = torch.optim.Adam(model.parameters(), lr=8e-4, weight_decay=2e-4)  
 
-    optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
+    #   optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
+    optimizer = torch.optim.Adam(
+    model.parameters(),
+    lr=1e-3,       # starting LR
+    betas=(0.9, 0.999), 
+    eps=1e-8,
+    weight_decay=0
+)
+    
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.1)
     #model.load_state_dict(checkpoint["model_state_dict"])
     #optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
@@ -877,7 +881,7 @@ else:
 
             
                 logits = model(images)  # (B, T, C)
-                #log_probs = F.log_softmax(logits, dim=2)  # Apply log softmax over classes (C)
+                log_probs = F.log_softmax(logits, dim=2)  # Apply log softmax over classes (C)
 
                 # Permute to (T, B, C) for CTC loss
                 log_probs = log_probs.permute(1, 0, 2)  # (T, B, C)

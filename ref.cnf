@@ -1,2 +1,2 @@
-model = models/crnn_ctc_model_lcbwz_500_ep_7.pth
+model = models/crnn_ctc_model_gNJnJ_500_ep_16.pth
 imgFolder = test_images

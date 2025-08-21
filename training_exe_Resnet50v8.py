@@ -535,7 +535,7 @@ class CRNN(nn.Module):
         self.num_classes = num_classes
 
 
-        resnet = models.resnet101(pretrained=False)
+        resnet = models.resnet50(pretrained=True)
 
         resnet.conv1 = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
         self.cnn = nn.Sequential(*list(resnet.children())[:-2])

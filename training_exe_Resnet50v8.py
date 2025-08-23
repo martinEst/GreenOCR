@@ -221,12 +221,7 @@ def encode_text(text, char_to_idx):
     return [char_to_idx[c] for c in text if c in char_to_idx]
 
 def ctc_greedy_decoder_batch(preds, idx_to_char, blank=0):
-    """
-    Greedy CTC decoding (batch version).
-    - Skips blanks
-    - Deduplicates only consecutive repeats (not across blanks)
-    - Uses idx_to_char to map indices back to string
-    """
+
     pred_texts = []
     for seq in preds:               # loop over batch
         decoded = []
@@ -571,6 +566,15 @@ class CRNN(nn.Module):
 #init
 model = CRNN(num_classes=num_classes,img_height=64,in_channels=1)
 
+def ctc_greedy_decoder(preds, blank=0):
+    decoded = []
+    prev = blank
+    for p in preds:
+        if p != prev and p != blank:
+            decoded.append(p.item())
+        prev = p
+    return decoded
+ 
 
 
 
@@ -675,11 +679,13 @@ if(exe):
       # Return single prediction
     preds = log_probs.argmax(dim=2)
     print(preds)
-    decoded_indices = ctc_greedy_decoder_batch(preds[0])
+    decoded_indices = ctc_greedy_decoder(preds[0])
     print(decoded_indices)
     
-    ocrTxt = ctc_greedy_decoder_batch (decoded_indices, idx_to_char)
-    
+    #ocrTxt = ctc_greedy_decoder_batch (decoded_indices, idx_to_char)
+    ocrTxt = "".join(idx_to_char[i] for i in decoded_indices)
+    print(ocrTxt)
+
     joined_text = ''.join(ocrTxt)
     cleaned_text = ' '.join(joined_text.split())
     print(cleaned_text)
@@ -761,7 +767,9 @@ else:
     #checkpoint = torch.load("/home/martinez/TUS/DISSERT/models/crnn_ctc_model_vrdVe_500_ep_8.pth", map_location="cuda")
     #checkpoint = torch.load("crnn_ctc_model_CEQgf_500_ep_1.pth", map_location="cuda")
 
-    #model.load_state_dict(checkpoint)
+    checkpoint = torch.load("models/crnn_ctc_model_Dlaoa_500_ep_21.pth", map_location="cuda")
+
+    model.load_state_dict(checkpoint)
     
     #aggressive warm ups
     #optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=3e-4)  
@@ -770,7 +778,8 @@ else:
     #   optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
     optimizer = torch.optim.Adam(
     model.parameters(),
-    lr=1e-3,       # starting LR
+    #lr=1e-3,       # starting LR
+    lr = 0.002,   
     betas=(0.9, 0.999), 
     eps=1e-8,
     weight_decay=0

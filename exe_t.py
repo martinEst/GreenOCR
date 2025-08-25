@@ -668,8 +668,8 @@ if(exe):
         #from torchvision.transforms.functional import to_pil_image
         #to_pil_image(img_tensor[0]).show(title="Channel 0 (Sharpened)")
 
-        #from torchvision.transforms.functional import to_pil_image
-    #to_pil_image(img_tensor[0]).show(title="Channel 0 (Sharpened)")
+        from torchvision.transforms.functional import to_pil_image
+        to_pil_image(img_tensor[0]).show(title="Channel 0 (Sharpened)")
 
         """  from torchvision.transforms.functional import to_pil_image
 

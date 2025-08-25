@@ -1,2 +1,13 @@
-model = models/crnn_ctc_model_epoch7.pth
-imgFolder = test_images
+
+model_interface = models/crnn_ctc_model_epoch7.pth
+model_traing = new
+
+
+data = custom
+
+label_file_custom=data/Custom/trainingImages/targetLabels.txt
+label_file_IAM64=data/English_data/IAM64_train.txt
+
+imgFolder_custom = data/Custom/trainingImages/allImg
+imgFolder_IAM64 = data/English_data/IAM64-new/train
+

@@ -18,6 +18,7 @@ import torchvision.transforms as T
 import kornia.geometry.transform as KG
 import torchvision.transforms.functional as TF
 
+from pathlib import Path
 
 from torch.utils.data import Dataset
 from PIL import Image
@@ -125,7 +126,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 #some special characters that appeared in germanic manuscripts, maybe should be avoided now
 ctc_loss_fn = torch.nn.CTCLoss(blank=0, reduction='mean', zero_infinity=True)
 
-vocab = list("abcdefghijklmnopqrstuvwxyz") + \
+vocab = ['<blank>'] +  list("abcdefghijklmnopqrstuvwxyz") + \
         list("ABCDEFGHIJKLMNOPQRSTUVWXYZ") + \
         list("0123456789") + \
         list("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~ ")  # include space
@@ -347,6 +348,12 @@ def resize_keep_aspect(img, target_h=64):
     resized = cv2.resize(img, (new_w, target_h), interpolation=cv2.INTER_CUBIC)
 
     return resized
+
+
+def chunk_dataloaders(dataloaders, n_chunks=10):
+    """Split dataloaders list into n_chunks groups."""
+    chunk_size = math.ceil(len(dataloaders) / n_chunks)
+    return [dataloaders[i:i+chunk_size] for i in range(0, len(dataloaders), chunk_size)]
 
 #---------------------------------------------------------------------------------------------------
 #
@@ -643,50 +650,94 @@ with open("ref.cnf") as myfile:
     for line in myfile:
         name, var = line[:-1].strip().partition("=")[::2]
         myvars[name.strip()] = var.strip()
-dir_path = myvars['imgFolder']+'/*/*.png'
-dict_imgSize_toList = {}
 
-label_file="data/English_data/IAM64_train.txt"
 
-#mapping labels
-with open(label_file, 'r', encoding='utf-8') as f:
-    for line in f:
-        try:
-            folder_image_name, text = line.strip().split(" ",1)
-            folder, image_name =  folder_image_name.strip().split(",")
-            dictonaryLabels.setdefault(folder+"/"+image_name, []).append(text)
+label_file = None
+dir_path  = None
 
-            #self.samples.append((folder+"/"+image_name+".png", text))
-        except:
-            print(line)
+
+if[myvars['data'] == "custom"]:
+    label_file=myvars['label_file_custom']
+    dir_path = myvars['imgFolder_custom']+'/*.png'
+elif [myvars['data'] == "IAM64"]:
+    label_file=myvars['label_file_IAM64']
+    dir_path = myvars['imgFolder_IAM64']+'/*/*.png'
 
 
 
-from pathlib import Path
+if myvars['data'] == "IAM64":
+    with open(label_file, 'r', encoding='utf-8') as f:
+        for line in f:
+            try:
+                folder_image_name, text = line.strip().split(" ",1)
+                folder, image_name =  folder_image_name.strip().split(",")
+                dictonaryLabels.setdefault(folder+"/"+image_name, []).append(text)
 
-# List all files in the directory
-listing = glob.glob(dir_path)
-for file_name in listing:
+                #self.samples.append((folder+"/"+image_name+".png", text))
+            except:
+                print(line)
 
-    # Construct full file path
-    # Open and find the image size
-    with Image.open(file_name) as img:
-        path = Path(file_name)
-        os.path.split(path.parent.absolute())[1]
-        label = os.path.split(path.parent.absolute())[1]+"/"+ os.path.basename(path)
-        label = label.replace(".png","")
-        print(label)
 
-        dictionary.setdefault(img.size, []).append(file_name+"|"+"".join((dictonaryLabels[label])))
+    # Group images by their dimension; tuple -> list
+    listing = glob.glob(dir_path)
+    for file_name in listing:
 
-        print(type(img.size))
-        print(f"{file_name}: {img.size}")
+        # Construct full file path
+        # Open and find the image size
+        with Image.open(file_name) as img:
+            path = Path(file_name)
+            os.path.split(path.parent.absolute())[1]
+            label = os.path.split(path.parent.absolute())[1]+"/"+ os.path.basename(path)
+            label = label.replace(".png","")
+            print(label)
+
+            dictionary.setdefault(img.size, []).append(file_name+"|"+"".join((dictonaryLabels[label])))
+
+            print(type(img.size))
+            print(f"{file_name}: {img.size}")
+
+
+
+#just to be consistent I use same approach. can be moved to common function
+#but actually label file already is 'normalized' so this here might not be optimized in future. 
+if myvars['data'] == "custom":
+    #mapping location of image to label for IAM64
+    
+    with open(label_file, 'r', encoding='utf-8') as f:
+        for line in f:
+            try:
+                folder_image_name, text = line.strip().split("|",1)
+                dictonaryLabels.setdefault(folder_image_name, []).append(text)                
+            except:
+                print(line)
+
+
+    # Group images by their dimension; tuple -> list
+    listing = glob.glob(dir_path)
+    for file_name in listing:
+
+        # Construct full file path
+        # Open and find the image size
+        with Image.open(file_name) as img:
+            path = Path(file_name)
+            os.path.split(path.parent.absolute())[1]
+            label = os.path.basename(path)
+            #label = label.replace(".png","")
+            print(label)
+
+            dictionary.setdefault(img.size, []).append(file_name+"|"+"".join((dictonaryLabels[label])))
+
+            print(type(img.size))
+            print(f"{file_name}: {img.size}")
+
+
+
 
 
 
 #print(dictionary[(1661, 89)][1])
 #iterate_over_dict()
-print(len(dictionary))
+#print(len(dictionary))
 
 
 
@@ -703,6 +754,7 @@ for key,value in dictionary.items():
     dataloaders.append(DataLoader(DictDataset(value,transform), batch_size=4, shuffle=True, collate_fn=collate_fn, num_workers=2,pin_memory=True ))
     
 
+dataloader_groups = chunk_dataloaders(dataloaders, n_chunks=100)
 
 #dataSrc = "En"  #default
 
@@ -770,24 +822,38 @@ criterion = nn.CTCLoss(blank=0, zero_infinity=True)
 #checkpoint = torch.load("/home/martinez/TUS/DISSERT/models/crnn_ctc_model_vrdVe_500_ep_8.pth", map_location="cuda")
 #checkpoint = torch.load("crnn_ctc_model_CEQgf_500_ep_1.pth", map_location="cuda")
 
-checkpoint = torch.load("models/crnn_ctc_model_NUtSj_500_ep_33.pth", map_location="cuda")
+#checkpoint = torch.load("models/crnn_ctc_model_epoch373.pth", map_location="cuda")
 
-model.load_state_dict(checkpoint)
+#model.load_state_dict(checkpoint)
 
 #aggressive warm ups
 #optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=3e-4)  
 #optimizer = torch.optim.Adam(model.parameters(), lr=8e-4, weight_decay=2e-4)  
 
 #   optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
-optimizer = torch.optim.Adam(
+""" optimizer = torch.optim.Adam(
     model.parameters(),
     lr=1e-3,      # safer start
     betas=(0.9, 0.999),
     eps=1e-8,
     weight_decay=0
+) """
+optimizer = torch.optim.AdamW(
+    model.parameters(),
+    lr=1e-3,          # max (start) LR
+    betas=(0.9, 0.999),
+    eps=1e-8,
+    weight_decay=1e-4 # small weight decay helps avoid overfitting
 )
 
-scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.1)
+#scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.1)
+
+# Cosine annealing scheduler (smooth decay over total epochs)
+scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+    optimizer,
+    T_max=400,   # number of epochs until LR restarts (here: full run)
+    eta_min=1e-6 # minimum LR at the end
+)
 #model.load_state_dict(checkpoint["model_state_dict"])
 #optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
 #start_epoch = checkpoint["epoch"] + 1
@@ -817,65 +883,67 @@ min_memory_available = 2 * 1024 * 1024 * 1024  # 2GB
 
 clear_gpu_memory()
 wait_until_enough_gpu_memory(min_memory_available)
-predefined_loss = 2.0
+#predefined_loss = 2.0
 best_val_loss = float('inf')
 # Usage example
-infinite_loaders = [make_infinite(dl) for dl in dataloaders]
+#infinite_loaders = [make_infinite(dl) for dl in dataloader_groups]
 for epoch in range(epocs_iterat):
     model.train()
     total_loss = 0.0
     num_batches = 0
 
-    for step in range(30):
-        for loader in infinite_loaders:
+    for group_id, group in enumerate(dataloader_groups):
+        print(f"Epoch {epoch}, group {group_id}...")
+        for loader in group:
             # Get one batch
-            images, targets,input_lengths, target_lengths  = next(loader)
+            for batch in loader:
+                images, targets,input_lengths, target_lengths  = batch
 
-            if images is None or targets is None:
-                print("⚠️ Skipping None batch")
-                continue
+                if images is None or targets is None:
+                    print("⚠️ Skipping None batch")
+                    continue
 
-            images = images.to(device)
-            targets = targets.to(device)
-            target_lengths = target_lengths.to(device)
+                images = images.to(device)
+                targets = targets.to(device)
+                target_lengths = target_lengths.to(device)
 
-            # Forward
-            logits = model(images)              # (B, T, C)
-            log_probs = F.log_softmax(logits, dim=2)
-            log_probs = log_probs.permute(1, 0, 2)  # (T, B, C) for CTC
+                # Forward
+                logits = model(images)              # (B, T, C)
+                log_probs = F.log_softmax(logits, dim=2)
+                log_probs = log_probs.permute(1, 0, 2)  # (T, B, C) for CTC
 
-            B = log_probs.size(1)
-            T = log_probs.size(0)
-            input_lengths = torch.full((B,), T, dtype=torch.long, device=device)
+                B = log_probs.size(1)
+                T = log_probs.size(0)
+                input_lengths = torch.full((B,), T, dtype=torch.long, device=device)
 
-            # Safety: skip batch if any target too long
-            if (target_lengths > input_lengths).any():
-                print(f"⚠️ Skipping batch: target longer than input T={T}")
-                continue
+                # Safety: skip batch if any target too long
+                if (target_lengths > input_lengths).any():
+                    print(f"⚠️ Skipping batch: target longer than input T={T}")
+                    continue
 
-            # Compute CTC loss
-            loss = ctc_loss_fn(log_probs, targets, input_lengths, target_lengths)
+                # Compute CTC loss
+                loss = ctc_loss_fn(log_probs, targets, input_lengths, target_lengths)
 
-            # Skip invalid loss
-            if torch.isnan(loss) or torch.isinf(loss):
-                print("⚠️ Skipping batch due to invalid loss")
-                continue
+                # Skip invalid loss
+                if torch.isnan(loss) or torch.isinf(loss):
+                    print("⚠️ Skipping batch due to invalid loss")
+                    continue
 
-            # Backward
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+                # Backward
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
 
-            total_loss += loss.item()
-            num_batches += 1
+                total_loss += loss.item()
+                num_batches += 1
 
-    # Average loss per epoch
-    avg_loss = total_loss / max(1, num_batches)
-    print(f"Epoch {epoch+1}: avg_loss = {avg_loss:.4f}")
+        # Average loss per epoch
+        avg_loss = total_loss / max(1, num_batches)
+        print(f"Epoch {epoch+1}: avg_loss = {avg_loss:.4f}")
 
-    # Save best model
-    if avg_loss < best_val_loss and avg_loss < predefined_loss:
-        best_val_loss = avg_loss
-        model_path = f"models/crnn_ctc_model_epoch{epoch+1}.pth"
-        torch.save(model.state_dict(), model_path)
-        print(f"✅ Saved new best model: {model_path}")
+        # Save best model
+        if avg_loss < best_val_loss:
+            best_val_loss = avg_loss
+            model_path = f"models/crnn_ctc_model_epoch{res+"_"+str(epoch+1)}.pth"
+            torch.save(model.state_dict(), model_path)
+            print(f"✅ Saved new best model: {model_path}")

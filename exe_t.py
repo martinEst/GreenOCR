@@ -125,9 +125,14 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 #some special characters that appeared in germanic manuscripts, maybe should be avoided now
 ctc_loss_fn = torch.nn.CTCLoss(blank=0, reduction='mean', zero_infinity=True)
-#germanic_chars = ['ſ','ſ','ä', 'ö', 'ü', 'Ä', 'Ö', 'Ü', 'ß', 'å', 'Å', 'æ', 'Æ', 'ø', 'Ø']
-vocab = ['<blank>'] + ['ſ','—','“','„','’','ô','é']+ list(string.ascii_letters + string.digits + string.punctuation + " ") + ['ä', 'ö', 'ü', 'Ä', 'Ö', 'Ü', 'ß', 'å', 'Å', 'æ', 'Æ', 'ø', 'Ø']
-#vocab = ";ſäöüÄÖÜßåÅæÆøØabcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,!?- '"
+
+vocab = list("abcdefghijklmnopqrstuvwxyz") + \
+        list("ABCDEFGHIJKLMNOPQRSTUVWXYZ") + \
+        list("0123456789") + \
+        list("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~ ")  # include space
+
+
+
 num_classes = len(vocab) + 1  # +1 for CTC blank
 # Add CTC blank at index 0
 BLANK_INDEX = 0
@@ -216,29 +221,25 @@ def encode_text(text, char_to_idx):
     """Convert string to list of integer indices (no blank)"""
     return [char_to_idx[c] for c in text if c in char_to_idx]
 
-def decode_prediction(preds, idx_to_char, blank=0):
-    """Greedy decoding: remove duplicates and blanks"""
-    
+
+def ctc_greedy_decoder_batch(preds, idx_to_char, blank=0):
+    """
+    Greedy CTC decoding (batch version).
+    - Skips blanks
+    - Deduplicates only consecutive repeats (not across blanks)
+    - Uses idx_to_char to map indices back to string
+    """
     pred_texts = []
-    for pred in preds:  # each prediction is a list of indices
-        string = []
-        prev = None
-        
-        if pred != blank and pred != prev:
-            string.append(idx_to_char.get(pred, ''))
-            prev = pred
-        pred_texts.append(''.join(string))
-    return pred_texts
-
-
-def ctc_greedy_decoder(preds, blank=0):
     decoded = []
     prev = blank
-    for p in preds:
+    for p in preds:               # loop over timesteps
+        p = p.item() if hasattr(p, "item") else int(p)
         if p != prev and p != blank:
-            decoded.append(p.item())
+            decoded.append(idx_to_char.get(p, ''))
         prev = p
-    return decoded
+    pred_texts.append("".join(decoded))
+    return pred_texts
+
 
 
 
@@ -517,7 +518,7 @@ class CRNN(nn.Module):
         self.num_classes = num_classes
 
 
-        resnet = models.resnet101(pretrained=False)
+        resnet = models.resnet50(pretrained=False)
 
         resnet.conv1 = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
         self.cnn = nn.Sequential(*list(resnet.children())[:-2])
@@ -558,14 +559,20 @@ class CRNN(nn.Module):
         # Final prediction
         x = self.fc(x)
 
-        return F.log_softmax(x, dim=2)
-
+        return x
 
 
 #---------------------------------------------------------------------------------------------------
 
 ## training / execution of model 
-
+def ctc_greedy_decoder(preds, blank=0):
+    decoded = []
+    prev = blank
+    for p in preds:
+        if p != prev and p != blank:
+            decoded.append(p.item())
+        prev = p
+    return decoded
 
 
 
@@ -661,8 +668,8 @@ if(exe):
         #from torchvision.transforms.functional import to_pil_image
         #to_pil_image(img_tensor[0]).show(title="Channel 0 (Sharpened)")
 
-        #from torchvision.transforms.functional import to_pil_image
-    #to_pil_image(img_tensor[0]).show(title="Channel 0 (Sharpened)")
+        from torchvision.transforms.functional import to_pil_image
+        to_pil_image(img_tensor[0]).show(title="Channel 0 (Sharpened)")
 
         """  from torchvision.transforms.functional import to_pil_image
 
@@ -685,7 +692,13 @@ if(exe):
         decoded_indices = ctc_greedy_decoder(preds[0])
         print(decoded_indices)
         
-        ocrTxt = decode_prediction (decoded_indices, idx_to_char)
+    
+    
+        #ocrTxt = ctc_greedy_decoder_batch (decoded_indices, idx_to_char)
+        ocrTxt = "".join(idx_to_char[i] for i in decoded_indices)
+        print(ocrTxt)
+
+        #ocrTxt = ctc_greedy_decoder_batch (decoded_indices, idx_to_char)
         
         joined_text = ''.join(ocrTxt)
         cleaned_text = ' '.join(joined_text.split())

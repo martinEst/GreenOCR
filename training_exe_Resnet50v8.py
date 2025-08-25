@@ -18,13 +18,13 @@ import torchvision.transforms as T
 import kornia.geometry.transform as KG
 import torchvision.transforms.functional as TF
 
+from pathlib import Path
 
 from torch.utils.data import Dataset
 from PIL import Image
 
 
 from torch.utils.data import Dataset
-
 
 
 import torchvision.transforms as T
@@ -125,9 +125,14 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 #some special characters that appeared in germanic manuscripts, maybe should be avoided now
 ctc_loss_fn = torch.nn.CTCLoss(blank=0, reduction='mean', zero_infinity=True)
-#germanic_chars = ['ſ','ſ','ä', 'ö', 'ü', 'Ä', 'Ö', 'Ü', 'ß', 'å', 'Å', 'æ', 'Æ', 'ø', 'Ø']
-vocab = ['<blank>'] + ['ſ','—','“','„','’','ô','é']+ list(string.ascii_letters + string.digits + string.punctuation + " ") + ['ä', 'ö', 'ü', 'Ä', 'Ö', 'Ü', 'ß', 'å', 'Å', 'æ', 'Æ', 'ø', 'Ø']
-#vocab = ";ſäöüÄÖÜßåÅæÆøØabcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,!?- '"
+
+vocab = ['<blank>'] +  list("abcdefghijklmnopqrstuvwxyz") + \
+        list("ABCDEFGHIJKLMNOPQRSTUVWXYZ") + \
+        list("0123456789") + \
+        list("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~ ")  # include space
+
+
+
 num_classes = len(vocab) + 1  # +1 for CTC blank
 # Add CTC blank at index 0
 BLANK_INDEX = 0
@@ -216,29 +221,21 @@ def encode_text(text, char_to_idx):
     """Convert string to list of integer indices (no blank)"""
     return [char_to_idx[c] for c in text if c in char_to_idx]
 
-def decode_prediction(preds, idx_to_char, blank=0):
-    """Greedy decoding: remove duplicates and blanks"""
-    
+def ctc_greedy_decoder_batch(preds, idx_to_char, blank=0):
+
     pred_texts = []
-    for pred in preds:  # each prediction is a list of indices
-        string = []
-        prev = None
-        
-        if pred != blank and pred != prev:
-            string.append(idx_to_char.get(pred, ''))
-            prev = pred
-        pred_texts.append(''.join(string))
+    for seq in preds:               # loop over batch
+        decoded = []
+        prev = blank
+        for p in seq:               # loop over timesteps
+            p = p.item() if hasattr(p, "item") else int(p)
+            if p != prev and p != blank:
+                decoded.append(idx_to_char.get(p, ''))
+            prev = p
+        pred_texts.append("".join(decoded))
     return pred_texts
 
 
-def ctc_greedy_decoder(preds, blank=0):
-    decoded = []
-    prev = blank
-    for p in preds:
-        if p != prev and p != blank:
-            decoded.append(p.item())
-        prev = p
-    return decoded
 
 
 
@@ -351,6 +348,12 @@ def resize_keep_aspect(img, target_h=64):
     resized = cv2.resize(img, (new_w, target_h), interpolation=cv2.INTER_CUBIC)
 
     return resized
+
+
+def chunk_dataloaders(dataloaders, n_chunks=10):
+    """Split dataloaders list into n_chunks groups."""
+    chunk_size = math.ceil(len(dataloaders) / n_chunks)
+    return [dataloaders[i:i+chunk_size] for i in range(0, len(dataloaders), chunk_size)]
 
 #---------------------------------------------------------------------------------------------------
 #
@@ -506,20 +509,60 @@ from torchvision import models
 import torch
 import torch.nn as nn
 import torchvision.models as models
+class DictDataset(Dataset):
+    def __init__(self, datasets_dict, transform=None):
+        # Flatten dictionary into list of (dataset_name, path, label)
+        self.samples = []
+       # for name, items in datasets_dict.items():
+        for entry in datasets_dict:
+            path, label = entry.split("|", 1)  # split only on first pipe
+            self.samples.append((path, label))
+    
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.samples)
+
+
+    def __getitem__(self, idx):
+        img_name, text = self.samples[idx]
+        img_path = img_name
+
+        # Load grayscale image
+        img_pil = Image.open(img_path).convert("L")
+        img_pil = pad_to_required_width(img_pil, target_length=len(text))
+        w, h = img_pil.size
+        # Convert to tensor [1, H, W]
+        img_np = np.array(img_pil, dtype=np.float32)
+        img_tensor = torch.from_numpy(img_np).unsqueeze(0)  # [1, H, W]
+        
+        # Apply transform if provided
+        if self.transform:
+            img_tensor = self.transform(img_tensor)
+
+        # Encode label
+        label_tensor = torch.tensor(
+            [char_to_idx[c] for c in text],
+            dtype=torch.long
+        )
+        
+        return img_tensor, label_tensor, w
+
+
+
+
 
 class CRNN(nn.Module):
     def __init__(self, num_classes, img_height=64, in_channels=1, freeze_cnn=False):
         super(CRNN, self).__init__()
         self.normalize = transforms.Normalize(mean=[0.5] * in_channels, std=[0.5] * in_channels)
-        
         self.img_height = img_height
         self.in_channels = in_channels
         self.num_classes = num_classes
 
-
-        resnet = models.resnet101(pretrained=False)
-
+        resnet = models.resnet50(pretrained=True)
         resnet.conv1 = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
+
         self.cnn = nn.Sequential(*list(resnet.children())[:-2])
 
         if freeze_cnn:
@@ -535,7 +578,6 @@ class CRNN(nn.Module):
             self.sequence_length = w
             self.feature_dim = c  # height collapsed to 1 later
 
-        
         self.lstm1 = nn.LSTM(self.feature_dim, 256, bidirectional=True, batch_first=True)
         self.lstm2 = nn.LSTM(512, 256, bidirectional=True, batch_first=True)
         self.lstm3 = nn.LSTM(512, 256, bidirectional=True, batch_first=True)
@@ -544,13 +586,9 @@ class CRNN(nn.Module):
     def forward(self, x):
         x = self.normalize(x)
         x = self.cnn(x)
-
-        # Collapse height to 1 → [B, C, 1, W]
-        x = F.adaptive_avg_pool2d(x, (1, None))
-
-        # Convert to sequence format → [B, W, C]
-        x = x.squeeze(2).permute(0, 2, 1)
-
+        x = F.adaptive_avg_pool2d(x, (1, None))       # Collapse height to 1 → [B, C, 1, W]
+        x = x.squeeze(2).permute(0, 2, 1) # Convert to sequence format → [B, W, C]
+        
         # Pass through BiLSTMs
         x, _ = self.lstm1(x)
         x, _ = self.lstm2(x)
@@ -558,7 +596,7 @@ class CRNN(nn.Module):
         # Final prediction
         x = self.fc(x)
 
-        return F.log_softmax(x, dim=2)
+        return x
 
 
 
@@ -570,7 +608,19 @@ class CRNN(nn.Module):
 #init
 model = CRNN(num_classes=num_classes,img_height=64,in_channels=1)
 
-
+def ctc_greedy_decoder(preds, blank=0):
+    decoded = []
+    prev = blank
+    for p in preds:
+        if p != prev and p != blank:
+            decoded.append(p.item())
+        prev = p
+    return decoded
+ 
+def make_infinite(dataloader):
+    while True:
+        for batch in dataloader:
+            yield batch
 
 
 #---------------------------------------------------------------------------------------------------
@@ -582,348 +632,318 @@ exe = False
 epocs_iterat = 500
 
 
-if(exe):
-    transform = DualChannelLaplaceTransform(train=False)
+#preaparing similar widht dataloaders
+import os
+import glob
+from PIL import Image
+from collections import defaultdict
+# Directory containing images
+myvars = {}
+dictionary = defaultdict()
+dictonaryLabels = defaultdict()
+def iterate_over_dict():
+    for key in dictionary:
+        print(key, dictionary[key])
 
-   # optimizer = torch.optim.Adam(model.parameters())  # Now includes RNN and FC
-    """     dataloader = DataLoader(
-        val_dataset,
-        batch_size=16,
-        shuffle=True,
-        collate_fn=ctc_collate_fn) """
     
-    state = model.load_state_dict(torch.load("/home/martinez/TUS/DISSERT/models/crnn_ctc_model_WvNqO_420_ep_387.pth"))  # or your path
-    model = model.to("cuda")
-    print("state keys:")
+with open("ref.cnf") as myfile:
+    for line in myfile:
+        name, var = line[:-1].strip().partition("=")[::2]
+        myvars[name.strip()] = var.strip()
 
+
+label_file = None
+dir_path  = None
+
+
+if[myvars['data'] == "custom"]:
+    label_file=myvars['label_file_custom']
+    dir_path = myvars['imgFolder_custom']+'/*.png'
+elif [myvars['data'] == "IAM64"]:
+    label_file=myvars['label_file_IAM64']
+    dir_path = myvars['imgFolder_IAM64']+'/*/*.png'
+
+
+
+if myvars['data'] == "IAM64":
+    with open(label_file, 'r', encoding='utf-8') as f:
+        for line in f:
+            try:
+                folder_image_name, text = line.strip().split(" ",1)
+                folder, image_name =  folder_image_name.strip().split(",")
+                dictonaryLabels.setdefault(folder+"/"+image_name, []).append(text)
+
+                #self.samples.append((folder+"/"+image_name+".png", text))
+            except:
+                print(line)
+
+
+    # Group images by their dimension; tuple -> list
+    listing = glob.glob(dir_path)
+    for file_name in listing:
+
+        # Construct full file path
+        # Open and find the image size
+        with Image.open(file_name) as img:
+            path = Path(file_name)
+            os.path.split(path.parent.absolute())[1]
+            label = os.path.split(path.parent.absolute())[1]+"/"+ os.path.basename(path)
+            label = label.replace(".png","")
+            print(label)
+
+            dictionary.setdefault(img.size, []).append(file_name+"|"+"".join((dictonaryLabels[label])))
+
+            print(type(img.size))
+            print(f"{file_name}: {img.size}")
+
+
+
+#just to be consistent I use same approach. can be moved to common function
+#but actually label file already is 'normalized' so this here might not be optimized in future. 
+if myvars['data'] == "custom":
+    #mapping location of image to label for IAM64
     
-    #
-    # image = Image.open('/home/martinez/TUS/DISSERT/data/latest/all_images2/Bennett__8e_down.png').convert('L')  # grayscale
-    #file = '/home/martinez/TUS/DISSERT/data/latest/all_images2/Bennett__8e_down.png'
-    file = '/home/martinez/TUS/DISSERT/data/customImages/lick.png'
-    #enchance input image ,using RealESRGANer outscale it 8, image will be rebuilt with some of the realesrg magic 
-    # and then downsample it to height 64 , need for our ocr model
+    with open(label_file, 'r', encoding='utf-8') as f:
+        for line in f:
+            try:
+                folder_image_name, text = line.strip().split("|",1)
+                dictonaryLabels.setdefault(folder_image_name, []).append(text)                
+            except:
+                print(line)
 
- # Step 1: Load image (OpenCV loads in BGR format)
-    img = cv2.imread(file, cv2.IMREAD_COLOR)
 
-    # Step 2: Create the model
-    mod = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
+    # Group images by their dimension; tuple -> list
+    listing = glob.glob(dir_path)
+    for file_name in listing:
 
-    # Step 3: Create the RealESRGANer instance
-    upsampler = RealESRGANer(
-        scale=4,
-        model_path='/home/martinez/d/weights/RealESRGAN_x4plus.pth', 
-        model=mod,
-        tile=0,  # Set to >0 for tiled inference on large images
-        tile_pad=10,
-        pre_pad=0,
-        half=False  # Set True if using half-precision and CUDA
-    )
+        # Construct full file path
+        # Open and find the image size
+        with Image.open(file_name) as img:
+            path = Path(file_name)
+            os.path.split(path.parent.absolute())[1]
+            label = os.path.basename(path)
+            #label = label.replace(".png","")
+            print(label)
 
-    # Step 4: Super-resolve
-    output, _ = upsampler.enhance(img, outscale=8)
-    print("Original shape:", img.shape)
-    print("Upscaled shape:", output.shape)
-    #target_w, target_h = 32, 64
-    #downscaled = cv2.resize(output, (target_w, target_h), interpolation=cv2.INTER_AREA)
-    output_proportional = resize_keep_aspect(output, target_h=64)  #return 3 channel RGB
+            dictionary.setdefault(img.size, []).append(file_name+"|"+"".join((dictonaryLabels[label])))
 
-    #?? can we increase training data from height 64 to 98 ? 
-
-    gray = cv2.cvtColor(output_proportional, cv2.COLOR_BGR2GRAY)  # or COLOR_RGB2GRAY depending on your color format
-   # gray = cv2.cvtColor(output_proportional, cv2.COLOR_BGR2GRAY)  # or COLOR_RGB2GRAY depending on your color format
-    tensor = torch.from_numpy(gray).float() / 255.0  # [H, W]
-    tensor = tensor.unsqueeze(0).unsqueeze(0)        # [B=1, C=1, H, W]
-    # Convert to tensor
-    #tensor = torch.from_numpy(gray).float() / 255.0    # normalize 0–1
-    #tensor = tensor.unsqueeze(0).unsqueeze(0)   
-    #maybe we should train on RGB ?
-
-    #tmp solution 
-    #cv2.imwrite("/tmp/enchcned_downsample.png", output_proportional)
-
-    #image = Image.open('/home/martinez/TUS/DISSERT/data/latest/all_images2/Bennett__8e_down.png').convert('L')  # grayscale
-
-    #image2 = Image.open('/home/martinez/TUS/DISSERT/data/customImages/a01-000u-00.png').convert('RGB')  # grayscale
-    #img_tensor = transform(image2).unsqueeze(0).cuda() 
-
-    img_tensor = transform(tensor).unsqueeze(0).cuda() 
-
-   
-    from torchvision.transforms.functional import to_pil_image
-    to_pil_image(img_tensor[0]).show(title="Channel 0 (Sharpened)")
-
-    #from torchvision.transforms.functional import to_pil_image
-   #to_pil_image(img_tensor[0]).show(title="Channel 0 (Sharpened)")
-
-    """  from torchvision.transforms.functional import to_pil_image
-
-        img_single = img_tensor[0]
-
-        # View each channel separately
-        to_pil_image(img_single[0]).show(title="Channel 0 (Sharpened)")
-        to_pil_image(img_single[1]).show(title="Channel 1 (Laplace)")
-    
-        """
-    preds = None
-    #with torch.no_grad():
-    
-    output = model(img_tensor)  # Output: (T, B, num_classes)
-    log_probs = torch.nn.functional.log_softmax(output, dim=2)
-      #  preds = ctc_greedy_decoder(log_probs)
-      # Return single prediction
-    preds = log_probs.argmax(dim=2)
-    print(preds)
-    decoded_indices = ctc_greedy_decoder(preds[0])
-    print(decoded_indices)
-    
-    ocrTxt = decode_prediction (decoded_indices, idx_to_char)
-    
-    joined_text = ''.join(ocrTxt)
-    cleaned_text = ' '.join(joined_text.split())
-    print(cleaned_text)
-    print("exit")
-    import sys
-    sys.exit()
+            print(type(img.size))
+            print(f"{file_name}: {img.size}")
 
 
 
 
 
-else:
+
+#print(dictionary[(1661, 89)][1])
+#iterate_over_dict()
+#print(len(dictionary))
+
+
+
+
 
  # Create dataset
+
+
+transform = DualChannelLaplaceTransform(train=True)
+
+# generate loaders
+dataloaders  = []
+for key,value in dictionary.items(): 
+    dataloaders.append(DataLoader(DictDataset(value,transform), batch_size=4, shuffle=True, collate_fn=collate_fn, num_workers=2,pin_memory=True ))
     
-    dataSrc = "En"  #default
 
-    if len( sys.argv ) == 2:
-        dataSrc = 'custom' if 'custom' in sys.argv[1] else dataSrc
-        
+dataloader_groups = chunk_dataloaders(dataloaders, n_chunks=100)
 
-    print(dataSrc)
+#dataSrc = "En"  #default
 
-
-    s = string.ascii_letters
-
-    random_level2 = random.choices(s, k=5)
-    res = ''.join(random_level2)
-
-    transform = DualChannelLaplaceTransform(train=True)
-    train_dataset = None
+#if len( sys.argv ) == 2:
+#    dataSrc = 'custom' if 'custom' in sys.argv[1] else dataSrc
     
-    if dataSrc == 'En' :
-        train_dataset = OCRDataset(
-            
-        label_file="data/English_data/IAM64_train.txt",
-        image_dir="data/English_data/IAM64-new/train/",
-        transform=transform,
-        dataSrc='En'
-    )
-    else:     ##can specify that its "custom" dataset. 
-        train_dataset = OCRDataset(
-    
-        label_file="data/Custom/trainingImages/targetLabels.txt",
-        image_dir="data/Custom/trainingImages/allImg/",
-        transform=transform,
-        dataSrc='custom'
-        )
-    #sampler = WidthBucketSampler(train_dataset, batch_size=8, num_buckets=10, shuffle=True)
 
-    dataloader = DataLoader(
-        train_dataset,
-        batch_size=8,
-        shuffle=True, 
-        collate_fn=collate_fn,
-        num_workers=os.cpu_count(),       # Suggestion: speed up data loading
-        pin_memory=True                   # Optional: improves transfer to GPU if using CUDA
-    )
+#print(dataSrc)
 
 
-    #print("exit")
-    #import sys
-    #sys.exit()
+s = string.ascii_letters
+
+random_level2 = random.choices(s, k=5)
+res = ''.join(random_level2)
+
+#train_dataset = None
 
 
-    # Define loss function
-    criterion = nn.CTCLoss(blank=0, zero_infinity=True)
+#if dataSrc == 'En' :
+#    train_dataset = OCRDataset(
+#        
+#    label_file="data/English_data/IAM64_train.txt",
+#    image_dir="data/English_data/IAM64-new/train/",
+#    transform=transform,
+#    dataSrc='En'
+#)
+#else:     ##can specify that its "custom" dataset. 
+#    train_dataset = OCRDataset(
+#
+#    label_file="data/Custom/trainingImages/targetLabels.txt",
+#    image_dir="data/Custom/trainingImages/allImg/",
+#    transform=transform,
+#    dataSrc='custom'
+#    )
+#sampler = WidthBucketSampler(train_dataset, batch_size=8, num_buckets=10, shuffle=True)
 
-    # Define optimizer
-    
-    #so far super slowley but eventually best improves
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)  
-
-
-    images, targets, input_lengths, target_lengths = next(iter(dataloader))
- 
-   # checkpoint = torch.load("/home/martinez/TUS/DISSERT/models/crnn_ctc_model_DSZIO_500_ep_29.pth", map_location="cuda")
-
-    #checkpoint = torch.load("/home/martinez/TUS/DISSERT/models/crnn_ctc_model_vrdVe_500_ep_8.pth", map_location="cuda")
-    #checkpoint = torch.load("crnn_ctc_model_CEQgf_500_ep_1.pth", map_location="cuda")
-
-    #model.load_state_dict(checkpoint)
-    
-    #aggressive warm ups
-    #optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=3e-4)  
-    #optimizer = torch.optim.Adam(model.parameters(), lr=8e-4, weight_decay=2e-4)  
-
-    #optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.1)
-    #model.load_state_dict(checkpoint["model_state_dict"])
-    #optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-    #start_epoch = checkpoint["epoch"] + 1
-    #loss = checkpoint["loss"]
+""" dataloader = DataLoader(
+    train_dataset,
+    batch_size=8,
+    shuffle=True, 
+    collate_fn=collate_fn,
+    num_workers=os.cpu_count(),       # Suggestion: speed up data loading
+    pin_memory=True                   # Optional: improves transfer to GPU if using CUDA
+) """
 
 
-    
-    #optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+#print("exit")
+#import sys
+#sys.exit()
 
-    device = torch.device("cuda")
-    model = model.to(device)    
 
-    
-    """  from torchvision.transforms.functional import to_pil_image
+# Define loss function
+criterion = nn.CTCLoss(blank=0, zero_infinity=True)
 
-        img_single = img_tensor[0]
+# Define optimizer
 
-        # View each channel separately
-        to_pil_image(img_single[0]).show(title="Channel 0 (Sharpened)")
-        to_pil_image(img_single[1]).show(title="Channel 1 (Laplace)")
-    
-        """
-    
-    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:1024"
-    #train(model, dataloader, optimizer, ctc_loss, device, 2);
-    min_memory_available = 2 * 1024 * 1024 * 1024  # 2GB
+#so far super slowley but eventually best improves
+#optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)  
 
-    clear_gpu_memory()
-    wait_until_enough_gpu_memory(min_memory_available)
-    best_val_loss = float('inf')
-    # Usage example
-    for epoch in range(epocs_iterat):  # or more
-        model.train()
-        total_loss = 0
 
-        #clear_gpu_memory()
-        #wait_until_enough_gpu_memory(min_memory_available)
+#images, targets, input_lengths, target_lengths = next(iter(dataloader))
 
-        for images, targets, input_lengths, target_lengths in dataloader:
-            clear_gpu_memory()
-            wait_until_enough_gpu_memory(min_memory_available)
- 
-            try:
-                #torch.cuda.memory_summary(device=None, abbreviated=False)
-                #torch.cuda.empty_cache()
-                if images is None:
+#checkpoint = torch.load("models/crnn_ctc_model_gNJnJ_500_ep_18.pth", map_location="cuda")
+
+#checkpoint = torch.load("/home/martinez/TUS/DISSERT/models/crnn_ctc_model_vrdVe_500_ep_8.pth", map_location="cuda")
+#checkpoint = torch.load("crnn_ctc_model_CEQgf_500_ep_1.pth", map_location="cuda")
+
+#checkpoint = torch.load("models/crnn_ctc_model_epoch373.pth", map_location="cuda")
+
+#model.load_state_dict(checkpoint)
+
+#aggressive warm ups
+#optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=3e-4)  
+#optimizer = torch.optim.Adam(model.parameters(), lr=8e-4, weight_decay=2e-4)  
+
+#   optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
+""" optimizer = torch.optim.Adam(
+    model.parameters(),
+    lr=1e-3,      # safer start
+    betas=(0.9, 0.999),
+    eps=1e-8,
+    weight_decay=0
+) """
+optimizer = torch.optim.AdamW(
+    model.parameters(),
+    lr=1e-3,          # max (start) LR
+    betas=(0.9, 0.999),
+    eps=1e-8,
+    weight_decay=1e-4 # small weight decay helps avoid overfitting
+)
+
+#scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.1)
+
+# Cosine annealing scheduler (smooth decay over total epochs)
+scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+    optimizer,
+    T_max=400,   # number of epochs until LR restarts (here: full run)
+    eta_min=1e-6 # minimum LR at the end
+)
+#model.load_state_dict(checkpoint["model_state_dict"])
+#optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+#start_epoch = checkpoint["epoch"] + 1
+#loss = checkpoint["loss"]
+
+
+
+#optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+
+device = torch.device("cuda")
+model = model.to(device)    
+
+
+"""  from torchvision.transforms.functional import to_pil_image
+
+    img_single = img_tensor[0]
+
+    # View each channel separately
+    to_pil_image(img_single[0]).show(title="Channel 0 (Sharpened)")
+    to_pil_image(img_single[1]).show(title="Channel 1 (Laplace)")
+
+    """
+import itertools
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:1024"
+#train(model, dataloader, optimizer, ctc_loss, device, 2);
+min_memory_available = 2 * 1024 * 1024 * 1024  # 2GB
+
+clear_gpu_memory()
+wait_until_enough_gpu_memory(min_memory_available)
+#predefined_loss = 2.0
+best_val_loss = float('inf')
+# Usage example
+#infinite_loaders = [make_infinite(dl) for dl in dataloader_groups]
+for epoch in range(epocs_iterat):
+    model.train()
+    total_loss = 0.0
+    num_batches = 0
+
+    for group_id, group in enumerate(dataloader_groups):
+        print(f"Epoch {epoch}, group {group_id}...")
+        for loader in group:
+            # Get one batch
+            for batch in loader:
+                images, targets,input_lengths, target_lengths  = batch
+
+                if images is None or targets is None:
                     print("⚠️ Skipping None batch")
                     continue
 
                 images = images.to(device)
-                #targets = targets.to(device)
-                #input_lengths = input_lengths.to(device)
-                target_lengths = target_lengths.to(device).clone().detach()
-                #target_lengths = target_lengths.to(device)
-                #print("target_lengths dtype:", target_lengths.dtype)
-                #print("target_lengths values:", target_lengths)
-                #print("Sum:", target_lengths.sum())
+                targets = targets.to(device)
+                target_lengths = target_lengths.to(device)
 
-                if targets.dim() == 2:
-                    # Still batched, need to flatten
-                    clean_targets = []
-                    for i in range(targets.size(0)):
-                        l = target_lengths[i]
-                        t = targets[i]
-                        if t.dim() == 0:
-                            t = t.unsqueeze(0)
-                        clean_targets.append(t[:l])
-                    clean_targets = torch.cat(clean_targets).to(device)
+                # Forward
+                logits = model(images)              # (B, T, C)
+                log_probs = F.log_softmax(logits, dim=2)
+                log_probs = log_probs.permute(1, 0, 2)  # (T, B, C) for CTC
 
-                elif targets.dim() == 1:
-                    # Already flat — just check it's consistent
-                    if targets.shape[0] != target_lengths.sum():
-                        print("❌ Already flat targets but lengths don't match")
-                        continue
-                    clean_targets = targets.to(device)
-
-                else:
-                    print("❌ Unknown target shape:", targets.shape)
-                    continue
-
-                # Final safety check
-                if clean_targets.numel() == 0:
-                    print("⚠️ Empty clean_targets — skipping batch.")
-                    continue
-
-                # Set final targets to clean version
-                targets = clean_targets
-
-            
-                logits = model(images)  # (B, T, C)
-                log_probs = F.log_softmax(logits, dim=2)  # Apply log softmax over classes (C)
-
-                # Permute to (T, B, C) for CTC loss
-                log_probs = log_probs.permute(1, 0, 2)  # (T, B, C)
-
-                # Input lengths (T should be log_probs.size(0) after permute)
-                T = log_probs.size(0)
                 B = log_probs.size(1)
-                #input_lengths = torch.full(size=(B,), fill_value=T, dtype=torch.long).to(device)
-                input_lengths = torch.full((B,), log_probs.size(0), dtype=torch.long).to(device)
-                #print("Sum4:", target_lengths.sum())
-                if any(target_lengths > input_lengths):
-                    print(f"⚠️ Skipping batch: some target_lengths > T={T}")
+                T = log_probs.size(0)
+                input_lengths = torch.full((B,), T, dtype=torch.long, device=device)
+
+                # Safety: skip batch if any target too long
+                if (target_lengths > input_lengths).any():
+                    print(f"⚠️ Skipping batch: target longer than input T={T}")
                     continue
-                safe_targets = targets.detach()
-                safe_input_lengths = input_lengths.detach()
-                #safe_target_lengths = target_lengths.detach()
-                safe_target_lengths = target_lengths.detach().clone()
-                valid_indices = [i for i, l in enumerate(target_lengths) if l > 0]
-                # Apply filtering
-                images = images[valid_indices]
-                safe_targets = torch.cat([safe_targets[i].unsqueeze(0) for i in valid_indices], dim=0) if safe_targets.ndim > 1 else safe_targets
-                safe_input_lengths = safe_input_lengths[valid_indices]
-                safe_target_lengths = safe_target_lengths[valid_indices]
 
+                # Compute CTC loss
+                loss = ctc_loss_fn(log_probs, targets, input_lengths, target_lengths)
 
-                # Filter out samples with target_length == 0
-                valid_indices = [i for i, l in enumerate(safe_target_lengths) if l > 0]
-
-                #loss = ctc_loss(log_probs, safe_targets, safe_input_lengths, safe_target_lengths)
-                loss = ctc_loss_fn(log_probs, safe_targets, safe_input_lengths, safe_target_lengths)
-
-
-                # Compute loss safely
-                
-
-                if loss is not None:
-                    loss.backward()
-                    optimizer.step()
-                    optimizer.zero_grad()
-
-                elif torch.isnan(loss) or torch.isinf(loss):
-                        print("⚠️ Skipping invalid loss")
-                        continue
-                else:
-                    print("⚠️ Skipped batch due to invalid loss")
+                # Skip invalid loss
+                if torch.isnan(loss) or torch.isinf(loss):
+                    print("⚠️ Skipping batch due to invalid loss")
                     continue
-                
 
+                # Backward
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
 
-
-                assert targets.shape[0] == target_lengths.sum()
-                
                 total_loss += loss.item()
-            except RuntimeError as e:
-                print(f"🔥 Skipping batch due to error: {e}")
-                torch.cuda.empty_cache()
-                continue
-        
+                num_batches += 1
 
-        avg_loss = total_loss / len(dataloader)
+        # Average loss per epoch
+        avg_loss = total_loss / max(1, num_batches)
+        print(f"Epoch {epoch+1}: avg_loss = {avg_loss:.4f}")
+
+        # Save best model
         if avg_loss < best_val_loss:
             best_val_loss = avg_loss
-            print("saving epocs : models/crnn_ctc_model_"+res+"_"+str(epocs_iterat)+"_ep_"+str(epoch))
-            print(f"  ✅ Saved new best model (val_loss={best_val_loss:.4f})")
-            torch.save(model.state_dict(), "models/crnn_ctc_model_"+res+"_"+str(epocs_iterat)+"_ep_"+str(epoch)+".pth")
-        print(f"Epoch {epoch+1}, Loss: {avg_loss:.4f}")
-
+            model_path = f"models/crnn_ctc_model_epoch{res+"_"+str(epoch+1)}.pth"
+            torch.save(model.state_dict(), model_path)
+            print(f"✅ Saved new best model: {model_path}")

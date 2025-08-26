@@ -111,7 +111,7 @@ torch.autograd.set_detect_anomaly(True)
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 
-
+import unicodedata
 
 
 # any input image or training image width can vary but height is fixed
@@ -121,17 +121,22 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 ## training data has some of germanic scripts and they contain more characters than classical english
 
-
+punctuation_chars = [chr(i) for i in range(sys.maxunicode)
+                     if unicodedata.category(chr(i)).startswith("P")]
 
 #some special characters that appeared in germanic manuscripts, maybe should be avoided now
 ctc_loss_fn = torch.nn.CTCLoss(blank=0, reduction='mean', zero_infinity=True)
 
-vocab = ['<blank>'] +  list("abcdefghijklmnopqrstuvwxyz") + \
+
+
+vocab = ['<blank>'] + list("ÈĒĖēėěęĚĘëéèÉÊËðÐŊŋ") + list("£§êàâé£§⊥")+['£','ſ','—','“','„','’','ô','é']+ list(string.ascii_letters + string.digits + string.punctuation + " ") + ['ä', 'ö', 'ü', 'Ä', 'Ö', 'Ü', 'ß', 'å', 'Å', 'æ', 'Æ', 'ø', 'Ø']
+""" 
+vocab = ['<blank>'] +  punctuation_chars + list("abcdefghijklmnopqrstuvwxyz") + \
         list("ABCDEFGHIJKLMNOPQRSTUVWXYZ") + \
         list("0123456789") + \
         list("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~ ")  # include space
 
-
+ """
 
 num_classes = len(vocab) + 1  # +1 for CTC blank
 # Add CTC blank at index 0
@@ -622,7 +627,7 @@ def make_infinite(dataloader):
 
 
 exe = False
-epocs_iterat = 500
+epocs_iterat = 1000
 
 
 #preaparing similar widht dataloaders
@@ -648,82 +653,128 @@ with open("ref.cnf") as myfile:
 label_file = None
 dir_path  = None
 
-
+""" 
 if[myvars['data'] == "custom"]:
     label_file=myvars['label_file_custom']
     dir_path = myvars['imgFolder_custom']+'/*.png'
 elif [myvars['data'] == "IAM64"]:
     label_file=myvars['label_file_IAM64']
     dir_path = myvars['imgFolder_IAM64']+'/*/*.png'
+ """
+print("preparing IAM64")    
+#process IAM64 prepared
+#if myvars['data'] == "IAM64":
+label_file=myvars['label_file_IAM64']
+dir_path = myvars['imgFolder_IAM64']+'/*/*.png'
+with open(label_file, 'r', encoding='utf-8') as f:
+    for line in f:
+        try:
+            folder_image_name, text = line.strip().split(" ",1)
+            folder, image_name =  folder_image_name.strip().split(",")
+            dictonaryLabels.setdefault(folder+"/"+image_name, []).append(text)
+
+            #self.samples.append((folder+"/"+image_name+".png", text))
+        except:
+            print(line)
 
 
+# Group images by their dimension; tuple -> list
+listing = glob.glob(dir_path)
+for file_name in listing:
 
-if myvars['data'] == "IAM64":
-    with open(label_file, 'r', encoding='utf-8') as f:
-        for line in f:
-            try:
-                folder_image_name, text = line.strip().split(" ",1)
-                folder, image_name =  folder_image_name.strip().split(",")
-                dictonaryLabels.setdefault(folder+"/"+image_name, []).append(text)
+    # Construct full file path
+    # Open and find the image size
+    with Image.open(file_name) as img:
+        path = Path(file_name)
+        os.path.split(path.parent.absolute())[1]
+        label = os.path.split(path.parent.absolute())[1]+"/"+ os.path.basename(path)
+        label = label.replace(".png","")
+        #print(label)
 
-                #self.samples.append((folder+"/"+image_name+".png", text))
-            except:
-                print(line)
+        dictionary.setdefault(img.size, []).append(file_name+"|"+"".join((dictonaryLabels[label])))
 
-
-    # Group images by their dimension; tuple -> list
-    listing = glob.glob(dir_path)
-    for file_name in listing:
-
-        # Construct full file path
-        # Open and find the image size
-        with Image.open(file_name) as img:
-            path = Path(file_name)
-            os.path.split(path.parent.absolute())[1]
-            label = os.path.split(path.parent.absolute())[1]+"/"+ os.path.basename(path)
-            label = label.replace(".png","")
-            print(label)
-
-            dictionary.setdefault(img.size, []).append(file_name+"|"+"".join((dictonaryLabels[label])))
-
-            print(type(img.size))
-            print(f"{file_name}: {img.size}")
-
-
-
+        #print(type(img.size))
+        #print(f"{file_name}: {img.size}")
+#--------------------------------------------------
+## process custom
+label_file=myvars['label_file_custom']
+dir_path = myvars['imgFolder_custom']+'/*.png'
 #just to be consistent I use same approach. can be moved to common function
 #but actually label file already is 'normalized' so this here might not be optimized in future. 
-if myvars['data'] == "custom":
+#if myvars['data'] == "custom":
     #mapping location of image to label for IAM64
-    
-    with open(label_file, 'r', encoding='utf-8') as f:
-        for line in f:
-            try:
-                folder_image_name, text = line.strip().split("|",1)
-                dictonaryLabels.setdefault(folder_image_name, []).append(text)                
-            except:
-                print(line)
-                continue
+print("preparing custom")    
+with open(label_file, 'r', encoding='utf-8') as f:
+    for line in f:
+        try:
+            folder_image_name, text = line.strip().split("|",1)
+            dictonaryLabels.setdefault(folder_image_name, []).append(text)                
+        except:
+            print(line)
+            continue
 
 
-    # Group images by their dimension; tuple -> list
-    listing = glob.glob(dir_path)
-    for file_name in listing:
+# Group images by their dimension; tuple -> list
+listing = glob.glob(dir_path)
+for file_name in listing:
 
-        # Construct full file path
-        # Open and find the image size
-        with Image.open(file_name) as img:
-            path = Path(file_name)
-            os.path.split(path.parent.absolute())[1]
-            label = os.path.basename(path)
-            #label = label.replace(".png","")
-            print(label)
-            
-            if label in dictonaryLabels:
-                dictionary.setdefault(img.size, []).append(file_name+"|"+"".join((dictonaryLabels[label])))
+    # Construct full file path
+    # Open and find the image size
+    with Image.open(file_name) as img:
+        path = Path(file_name)
+        os.path.split(path.parent.absolute())[1]
+        label = os.path.basename(path)
+        #label = label.replace(".png","")
+        #print(label)
+        
+        if label in dictonaryLabels:
+            dictionary.setdefault(img.size, []).append(file_name+"|"+"".join((dictonaryLabels[label])))
 
-            print(type(img.size))
-            print(f"{file_name}: {img.size}")
+        #print(type(img.size))
+        #print(f"{file_name}: {img.size}")
+
+
+#-----------------------------------------------
+
+
+
+
+## process ICDAR
+label_file=myvars['label_file_ICDAR']
+dir_path = myvars['imgFolder_ICDAR']+'/*.png'
+#just to be consistent I use same approach. can be moved to common function
+#but actually label file already is 'normalized' so this here might not be optimized in future. 
+#if myvars['data'] == "custom":
+    #mapping location of image to label for IAM64
+print("preparing ICDAR")
+with open(label_file, 'r', encoding='utf-8') as f:
+    for line in f:
+        try:
+            folder_image_name, text = line.strip().split("|",1)
+            dictonaryLabels.setdefault(folder_image_name, []).append(text)                
+        except:
+            print(line)
+            continue
+
+
+# Group images by their dimension; tuple -> list
+listing = glob.glob(dir_path)
+for file_name in listing:
+
+    # Construct full file path
+    # Open and find the image size
+    with Image.open(file_name) as img:
+        path = Path(file_name)
+        os.path.split(path.parent.absolute())[1]
+        label = os.path.basename(path)
+        #label = label.replace(".png","")
+        #print(label)
+        
+        if label in dictonaryLabels:
+            dictionary.setdefault(img.size, []).append(file_name+"|"+"".join((dictonaryLabels[label])))
+
+        print(type(img.size))
+        print(f"{file_name}: {img.size}")
 
 
 
@@ -883,6 +934,24 @@ wait_until_enough_gpu_memory(min_memory_available)
 best_val_loss = float('inf')
 # Usage example
 #infinite_loaders = [make_infinite(dl) for dl in dataloader_groups]
+
+from torch.utils.data import ConcatDataset, DataLoader
+
+all_datasets = []
+for group in dataloader_groups:
+    all_datasets.extend(group.datasets)   # assuming each loader came from a dataset
+
+
+merged_dataset = ConcatDataset(all_datasets)
+# Single efficient DataLoader
+train_loader = DataLoader(
+    merged_dataset,
+    batch_size=64,
+    shuffle=True,
+    num_workers=8,       # much faster if you have CPUs
+    pin_memory=True,     # speedup GPU transfer
+    drop_last=True
+)
 for epoch in range(epocs_iterat):
     model.train()
     total_loss = 0.0

@@ -110,8 +110,7 @@ torch.backends.cudnn.benchmark = False
 torch.autograd.set_detect_anomaly(True)
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
-
-
+import unicodedata
 
 
 # any input image or training image width can vary but height is fixed
@@ -127,13 +126,15 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 ctc_loss_fn = torch.nn.CTCLoss(blank=0, reduction='mean', zero_infinity=True)
 
 
-vocab = ['<blank>'] +  list("abcdefghijklmnopqrstuvwxyz") + \
+""" vocab = ['<blank>'] +  list("abcdefghijklmnopqrstuvwxyz") + \
         list("ABCDEFGHIJKLMNOPQRSTUVWXYZ") + \
         list("0123456789") + \
         list("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~ ")  # include space
 
+ """
 
-
+#vocab = build_vocab()
+vocab = ['<blank>'] + list("ÈĒĖēėěęĚĘëéèÉÊËðÐŊŋ") + list("£§êàâé£§⊥")+['£','ſ','—','“','„','’','ô','é']+ list(string.ascii_letters + string.digits + string.punctuation + " ") + ['ä', 'ö', 'ü', 'Ä', 'Ö', 'Ü', 'ß', 'å', 'Å', 'æ', 'Æ', 'ø', 'Ø']
 
 num_classes = len(vocab) + 1  # +1 for CTC blank
 # Add CTC blank at index 0
@@ -520,7 +521,7 @@ class CRNN(nn.Module):
         self.num_classes = num_classes
 
 
-        resnet = models.resnet50(pretrained=False)
+        resnet = models.resnet50(pretrained=True)
 
         resnet.conv1 = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
         self.cnn = nn.Sequential(*list(resnet.children())[:-2])

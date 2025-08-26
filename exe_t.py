@@ -126,10 +126,12 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 #some special characters that appeared in germanic manuscripts, maybe should be avoided now
 ctc_loss_fn = torch.nn.CTCLoss(blank=0, reduction='mean', zero_infinity=True)
 
-vocab = list("abcdefghijklmnopqrstuvwxyz") + \
+
+vocab = ['<blank>'] +  list("abcdefghijklmnopqrstuvwxyz") + \
         list("ABCDEFGHIJKLMNOPQRSTUVWXYZ") + \
         list("0123456789") + \
         list("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~ ")  # include space
+
 
 
 
@@ -589,7 +591,7 @@ with open("ref.cnf") as myfile:
 
 exe = True
 
-pathModel = myvars['model']
+pathModel = myvars['model_interface']
 
 
     
@@ -611,7 +613,7 @@ if(exe):
     print("state keys:")
 
     
-    for file in glob.glob( myvars['imgFolder']+"/*.png"):
+    for file in glob.glob( myvars['imgTest']+"/*.png"):
 
         print("IMG",file)
         #enchance input image ,using RealESRGANer outscale it 8, image will be rebuilt with some of the realesrg magic 
@@ -621,7 +623,7 @@ if(exe):
         img = cv2.imread(file, cv2.IMREAD_COLOR)
 
         # Step 2: Create the model
-        """ mod = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
+        mod = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
 
         # Step 3: Create the RealESRGANer instance
         upsampler = RealESRGANer(
@@ -637,11 +639,11 @@ if(exe):
         # Step 4: Super-resolve
         output, _ = upsampler.enhance(img, outscale=1)
         print("Original shape:", img.shape)
-        print("Upscaled shape:", output.shape) """
+        print("Upscaled shape:", output.shape) 
 
         #target_w, target_h = 32, 64
         #downscaled = cv2.resize(output, (target_w, target_h), interpolation=cv2.INTER_AREA)
-        output_proportional = resize_keep_aspect(img, target_h=64)  #return 3 channel RGB
+        output_proportional = resize_keep_aspect(output, target_h=64)  #return 3 channel RGB
 
         #?? can we increase training data from height 64 to 98 ? 
 
@@ -668,8 +670,8 @@ if(exe):
         #from torchvision.transforms.functional import to_pil_image
         #to_pil_image(img_tensor[0]).show(title="Channel 0 (Sharpened)")
 
-        from torchvision.transforms.functional import to_pil_image
-        to_pil_image(img_tensor[0]).show(title="Channel 0 (Sharpened)")
+        #from torchvision.transforms.functional import to_pil_image
+        #to_pil_image(img_tensor[0]).show(title="Channel 0 (Sharpened)")
 
         """  from torchvision.transforms.functional import to_pil_image
 

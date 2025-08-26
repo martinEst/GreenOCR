@@ -139,17 +139,10 @@ BLANK_INDEX = 0
 
 
 
-
-
-
-
-
 gc.collect()  # Python garbage collection
 torch.cuda.empty_cache()  # frees cached memory (not allocated memory)
 
-
-
-  
+ 
 
 # -----------------------------
 # Line Segmentation
@@ -710,6 +703,7 @@ if myvars['data'] == "custom":
                 dictonaryLabels.setdefault(folder_image_name, []).append(text)                
             except:
                 print(line)
+                continue
 
 
     # Group images by their dimension; tuple -> list
@@ -724,8 +718,9 @@ if myvars['data'] == "custom":
             label = os.path.basename(path)
             #label = label.replace(".png","")
             print(label)
-
-            dictionary.setdefault(img.size, []).append(file_name+"|"+"".join((dictonaryLabels[label])))
+            
+            if label in dictonaryLabels:
+                dictionary.setdefault(img.size, []).append(file_name+"|"+"".join((dictonaryLabels[label])))
 
             print(type(img.size))
             print(f"{file_name}: {img.size}")
@@ -750,7 +745,8 @@ transform = DualChannelLaplaceTransform(train=True)
 
 # generate loaders
 dataloaders  = []
-for key,value in dictionary.items(): 
+for key,value in sorted(dictionary.items()): 
+    #print(key)
     dataloaders.append(DataLoader(DictDataset(value,transform), batch_size=4, shuffle=True, collate_fn=collate_fn, num_workers=2,pin_memory=True ))
     
 

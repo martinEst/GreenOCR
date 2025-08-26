@@ -1,6 +1,6 @@
 
-model_interface = models/crnn_ctc_model_epoch7.pth
-model_traing = new
+model_interface = models/crnn_ctc_model_epochuzxxn_25.pth
+model_traing = models/crnn_ctc_model_epochQbIHd_22.pth
 
 
 data = custom
@@ -11,3 +11,4 @@ label_file_IAM64=data/English_data/IAM64_train.txt
 imgFolder_custom = data/Custom/trainingImages/allImg
 imgFolder_IAM64 = data/English_data/IAM64-new/train
 
+imgTest = test_images

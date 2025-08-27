@@ -230,13 +230,25 @@ import torch
 
     merged_model.load_state_dict(merged_state)
     return merged_model """
+
+
 def merge_models(model1, model2, alpha=0.5, **model_kwargs):
-    state1 = model1.state_dict()
-    state2 = model2.state_dict()
+    
+    
+        # in my home computer it runs out of memory , so I change merging part to cpu and then back to cuda
+    state1 = {k: v.cpu() for k, v in model1.state_dict().items()}
+    state2 = {k: v.cpu() for k, v in model2.state_dict().items()}
+
+    # merge on CPU (safe, memory-light)
     merged_state = {k: alpha*state1[k] + (1-alpha)*state2[k] for k in state1}
 
-    merged_model = type(model1)(**model_kwargs)
+    # load into model and move back to GPU
+    merged_model = CRNN(num_classes=num_classes, img_height=64, in_channels=1)
     merged_model.load_state_dict(merged_state)
+    merged_model = merged_model.to("cuda")
+
+   
+    
     return merged_model
 
 
@@ -1058,7 +1070,7 @@ for batch in  itertools.chain(*dataloaders):
         if avg_loss < best_val_loss :
             best_val_loss = avg_loss
             print(f"models/crnn_ctc_model_epoch{res+"_"+str(epoch+1)}.pth")
-            model_path = f"models/crnn_ctc_model_epoch{res}.pth"
+            model_path = f"models/crnn_ctc_model_epoch{res+"_"+str(countr)+"_"+str(epoch+1)}.pth"
             #best_models[0]= ((model.state_dict(), model_path))  ## this should replace with each new one
             dictionaryModels[res]=model
             dictionaryModels[res+"_path"]=model_path
@@ -1083,7 +1095,14 @@ for batch in  itertools.chain(*dataloaders):
             img_height=64,             # if your CRNN needs this
             in_channels=1              # grayscale input
         )
-        optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)  # reset optimizer
+        #optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)  # reset optimizer
+        optimizer = torch.optim.Adam(
+           model.parameters(),
+            lr=1e-3,      # safer start
+            betas=(0.9, 0.999),
+            eps=1e-8,
+            weight_decay=0
+        )
         scaler = torch.cuda.amp.GradScaler()  # optionally reset scaler too
         #model.load_state_dict(state)
         model.to(images.device)

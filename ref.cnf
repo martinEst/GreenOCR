@@ -1,6 +1,6 @@
 
-model_interface = models/crnn_ctc_model_epochOdwtu_5.pth
-model_traing =  models/crnn_ctc_model_epochOdwtu_5.pth
+model_interface = models/crnn_ctc_model_epochqsOvE.pth
+model_traing =  models/crnn_ctc_model_epochqsOvE.pth
 
 
 data = custom
@@ -18,3 +18,5 @@ imgFolder_ICDAR=data/ICDAR/allImg
 
 
 imgTest = test_images
+
+all_models = models

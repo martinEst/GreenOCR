@@ -592,7 +592,7 @@ with open("ref.cnf") as myfile:
 
 exe = True
 
-pathModel = myvars['model_interface']
+#pathModel = myvars['model_interface']
 
 
     
@@ -609,101 +609,103 @@ if(exe):
         shuffle=True,
         collate_fn=ctc_collate_fn) """
     
-    state = model.load_state_dict(torch.load(pathModel))  # or your path
-    model = model.to("cuda")
-    print("state keys:")
+   
+    for singleModel in glob.glob( "models/*.pth"):
+        state = model.load_state_dict(torch.load(singleModel))  # or your path
+        model = model.to("cuda")
+        print("state keys:")
 
-    
-    for file in glob.glob( myvars['imgTest']+"/*.png"):
-
-        print("IMG",file)
-        #enchance input image ,using RealESRGANer outscale it 8, image will be rebuilt with some of the realesrg magic 
-        # and then downsample it to height 64 , need for our ocr model
-
-        # Step 1: Load image (OpenCV loads in BGR format)
-        img = cv2.imread(file, cv2.IMREAD_COLOR)
-
-        # Step 2: Create the model
-        mod = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
-
-        # Step 3: Create the RealESRGANer instance
-        upsampler = RealESRGANer(
-            scale=4,
-            model_path='/home/martinez/d/weights/RealESRGAN_x4plus.pth', 
-            model=mod,
-            tile=0,  # Set to >0 for tiled inference on large images
-            tile_pad=10,
-            pre_pad=0,
-            half=False  # Set True if using half-precision and CUDA
-        )
-
-        # Step 4: Super-resolve
-        output, _ = upsampler.enhance(img, outscale=1)
-        print("Original shape:", img.shape)
-        print("Upscaled shape:", output.shape) 
-
-        #target_w, target_h = 32, 64
-        #downscaled = cv2.resize(output, (target_w, target_h), interpolation=cv2.INTER_AREA)
-        output_proportional = resize_keep_aspect(output, target_h=64)  #return 3 channel RGB
-
-        #?? can we increase training data from height 64 to 98 ? 
-
-        gray = cv2.cvtColor(output_proportional, cv2.COLOR_BGR2GRAY)  # or COLOR_RGB2GRAY depending on your color format
-    # gray = cv2.cvtColor(output_proportional, cv2.COLOR_BGR2GRAY)  # or COLOR_RGB2GRAY depending on your color format
-        tensor = torch.from_numpy(gray).float() / 255.0  # [H, W]
-        tensor = tensor.unsqueeze(0).unsqueeze(0)        # [B=1, C=1, H, W]
-        # Convert to tensor
-        #tensor = torch.from_numpy(gray).float() / 255.0    # normalize 0–1
-        #tensor = tensor.unsqueeze(0).unsqueeze(0)   
-        #maybe we should train on RGB ?
-
-        #tmp solution 
-        #cv2.imwrite("/tmp/enchcned_downsample.png", output_proportional)
-
-        #image = Image.open('/home/martinez/TUS/DISSERT/data/latest/all_images2/Bennett__8e_down.png').convert('L')  # grayscale
-
-        #image2 = Image.open('/home/martinez/TUS/DISSERT/data/customImages/a01-000u-00.png').convert('RGB')  # grayscale
-        #img_tensor = transform(image2).unsqueeze(0).cuda() 
-
-        img_tensor = transform(tensor).unsqueeze(0).cuda() 
-
-    
-        #from torchvision.transforms.functional import to_pil_image
-        #to_pil_image(img_tensor[0]).show(title="Channel 0 (Sharpened)")
-
-        #from torchvision.transforms.functional import to_pil_image
-        #to_pil_image(img_tensor[0]).show(title="Channel 0 (Sharpened)")
-
-        """  from torchvision.transforms.functional import to_pil_image
-
-            img_single = img_tensor[0]
-
-            # View each channel separately
-            to_pil_image(img_single[0]).show(title="Channel 0 (Sharpened)")
-            to_pil_image(img_single[1]).show(title="Channel 1 (Laplace)")
         
-            """
-        preds = None
-        #with torch.no_grad():
-        
-        output = model(img_tensor)  # Output: (T, B, num_classes)
-        log_probs = torch.nn.functional.log_softmax(output, dim=2)
-        #  preds = ctc_greedy_decoder(log_probs)
-        # Return single prediction
-        preds = log_probs.argmax(dim=2)
-        print(preds)
-        decoded_indices = ctc_greedy_decoder(preds[0])
-        print(decoded_indices)
-        
-    
-    
-        #ocrTxt = ctc_greedy_decoder_batch (decoded_indices, idx_to_char)
-        ocrTxt = "".join(idx_to_char[i] for i in decoded_indices)
-        print(ocrTxt)
+        for file in glob.glob( myvars['imgTest']+"/*.png"):
 
-        #ocrTxt = ctc_greedy_decoder_batch (decoded_indices, idx_to_char)
+            print("IMG",file)
+            #enchance input image ,using RealESRGANer outscale it 8, image will be rebuilt with some of the realesrg magic 
+            # and then downsample it to height 64 , need for our ocr model
+
+            # Step 1: Load image (OpenCV loads in BGR format)
+            img = cv2.imread(file, cv2.IMREAD_COLOR)
+
+            # Step 2: Create the model
+            mod = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
+
+            # Step 3: Create the RealESRGANer instance
+            upsampler = RealESRGANer(
+                scale=4,
+                model_path='/home/martinez/d/weights/RealESRGAN_x4plus.pth', 
+                model=mod,
+                tile=0,  # Set to >0 for tiled inference on large images
+                tile_pad=10,
+                pre_pad=0,
+                half=False  # Set True if using half-precision and CUDA
+            )
+
+            # Step 4: Super-resolve
+            output, _ = upsampler.enhance(img, outscale=1)
+            print("Original shape:", img.shape)
+            print("Upscaled shape:", output.shape) 
+
+            #target_w, target_h = 32, 64
+            #downscaled = cv2.resize(output, (target_w, target_h), interpolation=cv2.INTER_AREA)
+            output_proportional = resize_keep_aspect(output, target_h=64)  #return 3 channel RGB
+
+            #?? can we increase training data from height 64 to 98 ? 
+
+            gray = cv2.cvtColor(output_proportional, cv2.COLOR_BGR2GRAY)  # or COLOR_RGB2GRAY depending on your color format
+        # gray = cv2.cvtColor(output_proportional, cv2.COLOR_BGR2GRAY)  # or COLOR_RGB2GRAY depending on your color format
+            tensor = torch.from_numpy(gray).float() / 255.0  # [H, W]
+            tensor = tensor.unsqueeze(0).unsqueeze(0)        # [B=1, C=1, H, W]
+            # Convert to tensor
+            #tensor = torch.from_numpy(gray).float() / 255.0    # normalize 0–1
+            #tensor = tensor.unsqueeze(0).unsqueeze(0)   
+            #maybe we should train on RGB ?
+
+            #tmp solution 
+            #cv2.imwrite("/tmp/enchcned_downsample.png", output_proportional)
+
+            #image = Image.open('/home/martinez/TUS/DISSERT/data/latest/all_images2/Bennett__8e_down.png').convert('L')  # grayscale
+
+            #image2 = Image.open('/home/martinez/TUS/DISSERT/data/customImages/a01-000u-00.png').convert('RGB')  # grayscale
+            #img_tensor = transform(image2).unsqueeze(0).cuda() 
+
+            img_tensor = transform(tensor).unsqueeze(0).cuda() 
+
         
-        joined_text = ''.join(ocrTxt)
-        cleaned_text = ' '.join(joined_text.split())
-        print(cleaned_text)
+            #from torchvision.transforms.functional import to_pil_image
+            #to_pil_image(img_tensor[0]).show(title="Channel 0 (Sharpened)")
+
+            #from torchvision.transforms.functional import to_pil_image
+            #to_pil_image(img_tensor[0]).show(title="Channel 0 (Sharpened)")
+
+            """  from torchvision.transforms.functional import to_pil_image
+
+                img_single = img_tensor[0]
+
+                # View each channel separately
+                to_pil_image(img_single[0]).show(title="Channel 0 (Sharpened)")
+                to_pil_image(img_single[1]).show(title="Channel 1 (Laplace)")
+            
+                """
+            preds = None
+            #with torch.no_grad():
+            
+            output = model(img_tensor)  # Output: (T, B, num_classes)
+            log_probs = torch.nn.functional.log_softmax(output, dim=2)
+            #  preds = ctc_greedy_decoder(log_probs)
+            # Return single prediction
+            preds = log_probs.argmax(dim=2)
+            print(preds)
+            decoded_indices = ctc_greedy_decoder(preds[0])
+            print(decoded_indices)
+            
+        
+        
+            #ocrTxt = ctc_greedy_decoder_batch (decoded_indices, idx_to_char)
+            ocrTxt = "".join(idx_to_char[i] for i in decoded_indices)
+            print(ocrTxt)
+
+            #ocrTxt = ctc_greedy_decoder_batch (decoded_indices, idx_to_char)
+            
+            joined_text = ''.join(ocrTxt)
+            cleaned_text = ' '.join(joined_text.split())
+            print(cleaned_text)
     

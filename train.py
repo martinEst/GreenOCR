@@ -204,6 +204,40 @@ char_to_idx = {char: idx + 1 for idx, char in enumerate(vocab)}
 idx_to_char = {idx + 1: char for idx, char in enumerate(vocab)}
 idx_to_char[BLANK_INDEX] = ''  # blank is mapped to empty string
 
+import torch
+
+""" def merge_models(model1, model2, alpha=0.5):
+    
+    state1 = model1.state_dict()
+    state2 =model2.state_dict()
+
+    merged_state = {}
+    for k in state1.keys():
+        merged_state[k] = (alpha * state1[k] + (1 - alpha) * state2[k])
+
+    # create a new model instance (same architecture as model1)
+    
+    #merged_model = CRNN(num_classes=num_classes,img_height=64,in_channels=1)
+
+    merged_model = type(model1)(
+    num_classes=num_classes,
+    img_height=64,
+    in_channels=1
+    )
+    merged_model.load_state_dict(merged_state)
+
+    
+
+    merged_model.load_state_dict(merged_state)
+    return merged_model """
+def merge_models(model1, model2, alpha=0.5, **model_kwargs):
+    state1 = model1.state_dict()
+    state2 = model2.state_dict()
+    merged_state = {k: alpha*state1[k] + (1-alpha)*state2[k] for k in state1}
+
+    merged_model = type(model1)(**model_kwargs)
+    merged_model.load_state_dict(merged_state)
+    return merged_model
 
 
 def decode_target(tensor, idx2char):
@@ -638,6 +672,9 @@ from collections import defaultdict
 # Directory containing images
 myvars = {}
 dictionary = defaultdict()
+dictionaryModels = defaultdict()
+
+
 dictonaryLabels = defaultdict()
 def iterate_over_dict():
     for key in dictionary:
@@ -773,13 +810,13 @@ for file_name in listing:
         if label in dictonaryLabels:
             dictionary.setdefault(img.size, []).append(file_name+"|"+"".join((dictonaryLabels[label])))
 
-        print(type(img.size))
-        print(f"{file_name}: {img.size}")
+        #print(type(img.size))
+        #print(f"{file_name}: {img.size}")
 
 
 
 
-
+print("Dataloaders")
 
 #print(dictionary[(1661, 89)][1])
 #iterate_over_dict()
@@ -798,10 +835,10 @@ transform = DualChannelLaplaceTransform(train=True)
 dataloaders  = []
 for key,value in sorted(dictionary.items()): 
     #print(key)
-    dataloaders.append(DataLoader(DictDataset(value,transform), batch_size=4, shuffle=True, collate_fn=collate_fn, num_workers=2,pin_memory=True, persistent_workers=True ))
+    dataloaders.append(DataLoader(DictDataset(value,transform),   prefetch_factor=2,  batch_size=4, shuffle=True, collate_fn=collate_fn, num_workers=2,pin_memory=True, persistent_workers=True  ))
     
 
-dataloader_groups = chunk_dataloaders(dataloaders, n_chunks=100)
+#dataloader_groups = chunk_dataloaders(dataloaders, n_chunks=100)
 
 #dataSrc = "En"  #default
 
@@ -814,8 +851,6 @@ dataloader_groups = chunk_dataloaders(dataloaders, n_chunks=100)
 
 s = string.ascii_letters
 
-random_level2 = random.choices(s, k=5)
-res = ''.join(random_level2)
 
 #train_dataset = None
 
@@ -878,22 +913,21 @@ criterion = nn.CTCLoss(blank=0, zero_infinity=True)
 #optimizer = torch.optim.Adam(model.parameters(), lr=8e-4, weight_decay=2e-4)  
 
 #   optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
-""" optimizer = torch.optim.Adam(
+optimizer = torch.optim.Adam(
     model.parameters(),
     lr=1e-3,      # safer start
     betas=(0.9, 0.999),
     eps=1e-8,
     weight_decay=0
-) """
+)
 """ optimizer = torch.optim.AdamW(
     model.parameters(),
     lr=1e-3,          # max (start) LR
     betas=(0.9, 0.999),
     eps=1e-8,
     weight_decay=1e-4 # small weight decay helps avoid overfitting
-)
- """
-optimizer = torch.optim.AdamW(model.parameters(), lr=5e-4, weight_decay=1e-2)
+) """
+
 #scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.1)
 
 # Cosine annealing scheduler (smooth decay over total epochs)
@@ -932,7 +966,6 @@ min_memory_available = 2 * 1024 * 1024 * 1024  # 2GB
 clear_gpu_memory()
 wait_until_enough_gpu_memory(min_memory_available)
 #predefined_loss = 2.0
-best_val_loss = float('inf')
 # Usage example
 #infinite_loaders = [make_infinite(dl) for dl in dataloader_groups]
 
@@ -953,13 +986,26 @@ train_loader = DataLoader(
     pin_memory=True,     # speedup GPU transfer
     drop_last=True
 ) """
-""" for epoch in range(epocs_iterat):
-    model.train()
-    total_loss = 0.0
-    num_batches = 0
+print("training")
+scaler = torch.cuda.amp.GradScaler()   # put this before training loop
 
-    print(epoch)   
-    for batch in  itertools.chain(*dataloaders):
+countr = 0
+
+best_models = []
+for batch in  itertools.chain(*dataloaders):
+    
+    random_level2 = random.choices(s, k=5)
+    res = ''.join(random_level2)
+    model.train()
+    best_val_loss = float('inf')
+
+    
+    countr+=1
+    print(countr)   
+    for epoch in range(epocs_iterat):
+        total_loss = 0.0
+        num_batches = 0
+
         images, targets,input_lengths, target_lengths  = batch
 
         if images is None or targets is None:
@@ -970,129 +1016,83 @@ train_loader = DataLoader(
         targets = targets.to(device)
         target_lengths = target_lengths.to(device)
 
-        # Forward
-        logits = model(images)              # (B, T, C)
-        log_probs = F.log_softmax(logits, dim=2)
-        log_probs = log_probs.permute(1, 0, 2)  # (T, B, C) for CTC
+        optimizer.zero_grad()
+        with torch.cuda.amp.autocast(enabled=False):  
+            logits = model(images.float())   # full forward in FP32 
+        with torch.cuda.amp.autocast():  # 🔹 mixed precision zone
+            # Forward
+            #logits = model(images)              # (B, T, C)
+            log_probs = F.log_softmax(logits, dim=2)
+            log_probs = log_probs.permute(1, 0, 2)  # (T, B, C) for CTC
 
-        B = log_probs.size(1)
-        T = log_probs.size(0)
-        input_lengths = torch.full((B,), T, dtype=torch.long, device=device)
+            B = log_probs.size(1)
+            T = log_probs.size(0)
+            input_lengths = torch.full((B,), T, dtype=torch.long, device=device)
 
-        # Safety: skip batch if any target too long
-        if (target_lengths > input_lengths).any():
-            print(f"⚠️ Skipping batch: target longer than input T={T}")
-            continue
+            # Safety: skip batch if any target too long
+            if (target_lengths > input_lengths).any():
+                print(f"⚠️ Skipping batch: target longer than input T={T}")
+                continue
 
-        # Compute CTC loss
-        loss = ctc_loss_fn(log_probs, targets, input_lengths, target_lengths)
+            # Compute CTC loss
+            loss = ctc_loss_fn(log_probs, targets, input_lengths, target_lengths)
 
         # Skip invalid loss
         if torch.isnan(loss) or torch.isinf(loss):
             print("⚠️ Skipping batch due to invalid loss")
             continue
 
-        # Backward
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        # Backward with scaler
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
 
         total_loss += loss.item()
         num_batches += 1
 
-    # Average loss per epoch
-    avg_loss = total_loss / max(1, num_batches)
-    print(f"Epoch {epoch+1}: avg_loss = {avg_loss:.4f}")
+        # Average loss per epoch
+        avg_loss = total_loss / max(1, num_batches)
+        print(f"Epoch {epoch+1}: avg_loss = {avg_loss}")
 
-    # Save best model
-    if avg_loss < best_val_loss:
-        best_val_loss = avg_loss
-        model_path = f"models/crnn_ctc_model_epoch{res+"_"+str(epoch+1)}.pth"
-        torch.save(model.state_dict(), model_path)
-        print(f"✅ Saved new best model: {model_path}") """
-from torch.optim.lr_scheduler import CosineAnnealingLR, LambdaLR
-from torch.cuda.amp import autocast, GradScaler
+        # Save best model
+        if avg_loss < best_val_loss :
+            best_val_loss = avg_loss
+            print(f"models/crnn_ctc_model_epoch{res+"_"+str(epoch+1)}.pth")
+            model_path = f"models/crnn_ctc_model_epoch{res}.pth"
+            #best_models[0]= ((model.state_dict(), model_path))  ## this should replace with each new one
+            dictionaryModels[res]=model
+            dictionaryModels[res+"_path"]=model_path
+            #dictionaryModels.setdefault(res, []).append(model.state_dict())
+            #dictionaryModels.setdefault(res+"_path", []).append(model_path)
 
-# ----- Optimizer -----
-optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-2)
-scaler = GradScaler()  # For mixed precision
-accumulation_steps = 4  # Adjust for memory
+            #torch.save(model.state_dict(), model_path)
+            #print(f"✅ Saved new best model: {model_path}")
+    
+    if len(dictionaryModels)>2:
+        print(res)
+        print(dictionaryModels[res+"_path"])
+        #state = merge_models(model,dictionaryModels[res], alpha=0.7)
 
-# ----- Scheduler: cosine annealing with warmup -----
-num_training_steps = len(list(itertools.chain(*dataloaders))) * epocs_iterat
-warmup_steps = int(0.05 * num_training_steps)  # 5% warmup
-
-def lr_lambda(current_step):
-    if current_step < warmup_steps:
-        return float(current_step) / float(max(1, warmup_steps))
-    progress = float(current_step - warmup_steps) / float(max(1, num_training_steps - warmup_steps))
-    return 0.5 * (1.0 + torch.cos(torch.tensor(progress * 3.1415926535)))
-
-scheduler = LambdaLR(optimizer, lr_lambda=lr_lambda)
-
-best_val_loss = float("inf")
-global_step = 0
-
-# ----- Training Loop -----
-for epoch in range(epocs_iterat):
-    model.train()
-    total_loss = 0.0
-    num_batches = 0
-    optimizer.zero_grad()  # For gradient accumulation
-
-    print(f"Epoch {epoch+1}/{epocs_iterat}")
-    for i, batch in enumerate(itertools.chain(*dataloaders)):
-        images, targets, input_lengths, target_lengths = batch
-
-        if images is None or targets is None:
-            print("⚠️ Skipping None batch")
-            continue
-
-        images = images.to(device)
-        targets = targets.to(device)
-        target_lengths = target_lengths.to(device)
-
-        B = images.size(0)
-
-        # ----- Mixed precision forward -----
+        # reinit new model ? 
+        #model = CRNN(num_classes=num_classes, img_height=64, in_channels=1)
+        model = merge_models(
+            model,
+            dictionaryModels[res],
+            alpha=0.7,
+            num_classes=num_classes,   # REQUIRED by CRNN
+            img_height=64,             # if your CRNN needs this
+            in_channels=1              # grayscale input
+        )
+        optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)  # reset optimizer
+        scaler = torch.cuda.amp.GradScaler()  # optionally reset scaler too
+        #model.load_state_dict(state)
+        model.to(images.device)
+        torch.save(model.state_dict(), dictionaryModels[res+"_path"])
         
-        logits = model(images)
-        log_probs = F.log_softmax(logits, dim=2).permute(1, 0, 2)
-        T = log_probs.size(0)
-        input_lengths = torch.full((B,), T, dtype=torch.long, device=device)
 
-        if (target_lengths > input_lengths).any():
-            print(f"⚠️ Skipping batch: target longer than input T={T}")
-            continue
 
-        loss = ctc_loss_fn(log_probs, targets, input_lengths, target_lengths)
-        if torch.isnan(loss) or torch.isinf(loss):
-            print("⚠️ Skipping batch due to invalid loss")
-            continue
-
-        loss = loss / accumulation_steps  # normalize for accumulation
-
-        # ----- Backward + Scaler -----
-        scaler.scale(loss).backward()
-
-        if (i + 1) % accumulation_steps == 0:
-            scaler.step(optimizer)
-            scaler.update()
-            optimizer.zero_grad()
-
-        total_loss += loss.item() * accumulation_steps
-        num_batches += 1
-
-        # ----- Scheduler Step -----
-        scheduler.step()
-        global_step += 1
-
-    avg_loss = total_loss / max(1, num_batches)
-    print(f"Epoch {epoch+1}: avg_loss = {avg_loss:.4f}")
-
-    # Save best model
-    if avg_loss < best_val_loss:
-        best_val_loss = avg_loss
-        model_path = f"models/crnn_ctc_model_epoch{res+'_'+str(epoch+1)}.pth"
-        torch.save(model.state_dict(), model_path)
-        print(f"✅ Saved new best model: {model_path}")
+    
+    best_models.append((model_path, best_val_loss))
+    #merge and save 
+    
+    #save previously best model 

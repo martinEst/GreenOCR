@@ -232,24 +232,73 @@ import torch
     return merged_model """
 
 
-def merge_models(model1, model2, alpha=0.5, **model_kwargs):
-    
-    
-        # in my home computer it runs out of memory , so I change merging part to cpu and then back to cuda
-    state1 = {k: v.cpu() for k, v in model1.state_dict().items()}
-    state2 = {k: v.cpu() for k, v in model2.state_dict().items()}
+import torch
+import copy
 
-    # merge on CPU (safe, memory-light)
-    merged_state = {k: alpha*state1[k] + (1-alpha)*state2[k] for k in state1}
+def merge_models_inplace(model1, model2, alpha=0.5):
+    with torch.no_grad():
+        for p1, p2 in zip(model1.parameters(), model2.parameters()):
+            p1.data.mul_(alpha).add_((1 - alpha) * p2.data)
+    return model1  # now model1 holds the merged weights
 
-    # load into model and move back to GPU
-    merged_model = CRNN(num_classes=num_classes, img_height=64, in_channels=1)
-    merged_model.load_state_dict(merged_state)
-    merged_model = merged_model.to("cuda")
 
-   
-    
+def merge_models(model1, model2, alpha=0.5):
+    merged_model = copy.deepcopy(model1)#
+    with torch.no_grad():  # <-- here
+        for (name, param1), param2 in zip(model1.named_parameters(), model2.parameters()):
+            merged_model.state_dict()[name].data.copy_(
+                alpha * param1.data + (1 - alpha) * param2.data
+            )
+    model1 = None
+    model2 = None
+    clear_gpu_memory()
     return merged_model
+
+
+def merge_models_safe(model1, model2, alpha=0.5, device='cuda'):
+    """
+    Merge two models by weighted averaging their parameters.
+    If GPU memory is insufficient, merges on CPU.
+    
+    Args:
+        model1, model2: PyTorch models with same architecture
+        alpha: weighting factor (0..1)
+        device: 'cuda' or 'cpu'
+    
+    Returns:
+        merged_model on the specified device
+    """
+    
+    def model_size_bytes(model):
+        return sum(p.numel() * p.element_size() for p in model.parameters())
+    
+    # Estimate memory needed
+    size1 = model_size_bytes(model1)
+    size2 = model_size_bytes(model2)
+    estimated_merge_size = size1 + size2 + max(size1, size2)  # worst-case
+    
+    # Check free GPU memory
+    if device == 'cuda':
+        free_mem = torch.cuda.memory_reserved() - torch.cuda.memory_allocated()
+        if estimated_merge_size > free_mem:
+            print("Warning: Not enough GPU memory, merging on CPU")
+            device = 'cpu'
+    
+    # Move models to the target device
+    m1 = copy.deepcopy(model1).to(device)
+    m2 = copy.deepcopy(model2).to(device)
+    merged_model = copy.deepcopy(m1)
+    
+    # Merge weights without gradient tracking
+    with torch.no_grad():
+        for (name, param1), param2 in zip(m1.named_parameters(), m2.parameters()):
+            merged_model.state_dict()[name].data.copy_(
+                alpha * param1.data + (1 - alpha) * param2.data
+            )
+    model1 = None
+    clear_gpu_memory()
+    return merged_model
+
 
 
 def decode_target(tensor, idx2char):
@@ -673,7 +722,7 @@ def make_infinite(dataloader):
 
 
 exe = False
-epocs_iterat = 1000
+epocs_iterat = 500
 
 
 #preaparing similar widht dataloaders
@@ -1002,10 +1051,17 @@ print("training")
 scaler = torch.cuda.amp.GradScaler()   # put this before training loop
 
 countr = 0
-
+objectSaved = False
+res = None
 best_models = []
 for batch in  itertools.chain(*dataloaders):
     
+    if objectSaved:
+        model = torch.load(dictionaryModels[res+"_path"], map_location="cuda")
+        state_dict = model.state_dict() 
+        dictionaryModels.clear() 
+        objectSaved = False
+
     random_level2 = random.choices(s, k=5)
     res = ''.join(random_level2)
     model.train()
@@ -1055,9 +1111,11 @@ for batch in  itertools.chain(*dataloaders):
             continue
 
         # Backward with scaler
-        scaler.scale(loss).backward()
-        scaler.step(optimizer)
-        scaler.update()
+        torch.cuda.empty_cache()
+
+        loss.backward()
+        optimizer.step()
+        #scaler.update()
 
         total_loss += loss.item()
         num_batches += 1
@@ -1069,6 +1127,7 @@ for batch in  itertools.chain(*dataloaders):
         # Save best model
         if avg_loss < best_val_loss :
             best_val_loss = avg_loss
+            print("FOUND new best losss value")
             print(f"models/crnn_ctc_model_epoch{res+"_"+str(epoch+1)}.pth")
             model_path = f"models/crnn_ctc_model_epoch{res+"_"+str(countr)+"_"+str(epoch+1)}.pth"
             #best_models[0]= ((model.state_dict(), model_path))  ## this should replace with each new one
@@ -1081,32 +1140,34 @@ for batch in  itertools.chain(*dataloaders):
             #print(f"✅ Saved new best model: {model_path}")
     
     if len(dictionaryModels)>2:
+        objectSaved = True  ## 
         print(res)
         print(dictionaryModels[res+"_path"])
-        #state = merge_models(model,dictionaryModels[res], alpha=0.7)
-
+        state = merge_models(model,dictionaryModels[res], alpha=0.7)
+        print("epocs",epoch+1)
+        print("out from epocs; Saving the best")
         # reinit new model ? 
         #model = CRNN(num_classes=num_classes, img_height=64, in_channels=1)
-        model = merge_models(
+        """ model = merge_models_safe(
             model,
             dictionaryModels[res],
-            alpha=0.7,
+            alpha=0.6,
             num_classes=num_classes,   # REQUIRED by CRNN
             img_height=64,             # if your CRNN needs this
             in_channels=1              # grayscale input
-        )
+        ) """
         #optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)  # reset optimizer
-        optimizer = torch.optim.Adam(
-           model.parameters(),
-            lr=1e-3,      # safer start
-            betas=(0.9, 0.999),
-            eps=1e-8,
-            weight_decay=0
-        )
-        scaler = torch.cuda.amp.GradScaler()  # optionally reset scaler too
+        #optimizer = torch.optim.Adam(
+        #   model.parameters(),
+        #    lr=1e-3,      # safer start
+        #    betas=(0.9, 0.999),
+        #    eps=1e-8,
+        #    weight_decay=0
+        #)
+        #scaler = torch.cuda.amp.GradScaler()  # optionally reset scaler too
         #model.load_state_dict(state)
-        model.to(images.device)
-        torch.save(model.state_dict(), dictionaryModels[res+"_path"])
+        #model.to(images.device)
+        torch.save(state, dictionaryModels[res+"_path"])
         
 
 

@@ -611,7 +611,10 @@ if(exe):
     
    
     for singleModel in glob.glob( "models/*.pth"):
-        state = model.load_state_dict(torch.load(singleModel))  # or your path
+        
+        model = torch.load(singleModel, map_location="cpu")
+        state_dict = model.state_dict()
+        #state = model.load_state_dict(torch.load(singleModel))  # or your path
         model = model.to("cuda")
         print("state keys:")
 

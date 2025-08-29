@@ -511,24 +511,25 @@ import torch
 import torch.nn as nn
 import torchvision.models as models
 import glob
+
+
 class CRNN(nn.Module):
     def __init__(self, num_classes, img_height=64, in_channels=1, freeze_cnn=False):
         super(CRNN, self).__init__()
         self.normalize = transforms.Normalize(mean=[0.5] * in_channels, std=[0.5] * in_channels)
-        
         self.img_height = img_height
         self.in_channels = in_channels
         self.num_classes = num_classes
 
-
         resnet = models.resnet50(pretrained=True)
-
         resnet.conv1 = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
-        self.cnn = nn.Sequential(*list(resnet.children())[:-2])
 
+        self.cnn = nn.Sequential(*list(resnet.children())[:-2])
         if freeze_cnn:
-            for param in self.cnn.parameters():
-                param.requires_grad = False
+            for name, param in self.cnn.named_parameters():
+                if "layer4" not in name: ## layer 4 trainiable. keep 1-3 as resnet have
+                    param.requires_grad = False
+
 
         with torch.no_grad():
             #dummy_input = torch.zeros(1, in_channels, 100)
@@ -539,7 +540,6 @@ class CRNN(nn.Module):
             self.sequence_length = w
             self.feature_dim = c  # height collapsed to 1 later
 
-        
         self.lstm1 = nn.LSTM(self.feature_dim, 256, bidirectional=True, batch_first=True)
         self.lstm2 = nn.LSTM(512, 256, bidirectional=True, batch_first=True)
         self.lstm3 = nn.LSTM(512, 256, bidirectional=True, batch_first=True)
@@ -548,17 +548,12 @@ class CRNN(nn.Module):
     def forward(self, x):
         x = self.normalize(x)
         x = self.cnn(x)
-
-        # Collapse height to 1 → [B, C, 1, W]
-        x = F.adaptive_avg_pool2d(x, (1, None))
-
-        # Convert to sequence format → [B, W, C]
-        x = x.squeeze(2).permute(0, 2, 1)
-
+        x = F.adaptive_avg_pool2d(x, (1, None))       # Collapse height to 1 → [B, C, 1, W]
+        x = x.squeeze(2).permute(0, 2, 1) # Convert to sequence format → [B, W, C]
+  
         # Pass through BiLSTMs
         x, _ = self.lstm1(x)
         x, _ = self.lstm2(x)
-
         # Final prediction
         x = self.fc(x)
 
@@ -580,7 +575,7 @@ def ctc_greedy_decoder(preds, blank=0):
 
 
 #init
-model = CRNN(num_classes=num_classes,img_height=64,in_channels=1)
+model = CRNN(num_classes=num_classes,img_height=64,in_channels=1,freeze_cnn=True)
 
 
 myvars = {}
@@ -611,13 +606,13 @@ if(exe):
     
    
     for singleModel in glob.glob( "models/*.pth"):
-                
+        print("model",singleModel)                
         """      regexp = re.compile(r'.*_[5-90-9]_.*')
                 if regexp.search(singleModel):
                     print('matched')
             """
    
-        model = torch.load(singleModel, map_location="cpu")
+        model = torch.load(singleModel, map_location="cuda")
         state_dict = model.state_dict()
         #state = model.load_state_dict(torch.load(singleModel))  # or your path
         model = model.to("cuda")
@@ -684,15 +679,6 @@ if(exe):
             #from torchvision.transforms.functional import to_pil_image
             #to_pil_image(img_tensor[0]).show(title="Channel 0 (Sharpened)")
 
-            """  from torchvision.transforms.functional import to_pil_image
-
-                img_single = img_tensor[0]
-
-                # View each channel separately
-                to_pil_image(img_single[0]).show(title="Channel 0 (Sharpened)")
-                to_pil_image(img_single[1]).show(title="Channel 1 (Laplace)")
-            
-                """
             preds = None
             #with torch.no_grad():
             

@@ -149,48 +149,6 @@ torch.cuda.empty_cache()  # frees cached memory (not allocated memory)
 
  
 
-# -----------------------------
-# Line Segmentation
-# -----------------------------
-
-
-
-# -----------------------------
-# AUGMENTATION
-# -----------------------------
-
-
-
-#few different albumentations approaches
-#------------------
-# albumentations
-# several different function to try  
-
-""" def get_train_transform(image_height=32, image_max_width=2048):
-    return A.Compose([
-        A.Resize(height=image_height, width=image_max_width, interpolation=1, always_apply=True),  # Resize to fixed height
-        A.OneOf([
-            A.MotionBlur(p=0.2),
-            A.MedianBlur(blur_limit=3, p=0.1),
-            A.GaussianBlur(blur_limit=(3, 5), p=0.2),
-        ], p=0.3),
-        A.OneOf([
-            A.GaussNoise(var_limit=(10.0, 50.0), p=0.3),
-            A.ISONoise(p=0.2),
-        ], p=0.3),
-        A.RandomBrightnessContrast(p=0.3),
-        A.Downscale(scale_min=0.3, scale_max=0.7, interpolation=0, p=0.2),
-        A.ToGray(p=1.0),  # Ensure grayscale
-        A.Normalize(mean=(0.5,), std=(0.5,), max_pixel_value=255.0),
-        ToTensorV2()
-    ])
-
- """
-
-# kornia
-
-
-
 
 
 
@@ -236,13 +194,45 @@ import torch
 import copy
 
 
+import torch
+
+def merge_task_specific_models(models, alphas=None, merge_layer4=False):
+    """
+    Merge multiple CRNN models, only merging LSTM + classifier layers
+    and optionally the last ResNet block (cnn.5).
+
+    Args:
+        models (list of nn.Module): list of models to merge
+        alphas (list of float, optional): weights for each model, must sum to 1
+        merge_layer4 (bool): if True, merge cnn.5 block as well
+
+    Returns:
+        nn.Module: merged model (modifies first model in list in-place)
+    """
+    assert len(models) > 1, "Need at least two models to merge"
+    num_models = len(models)
+
+    if alphas is None:
+        alphas = [1.0 / num_models] * num_models
+    else:
+        assert len(alphas) == num_models, "Length of alphas must match number of models"
+        assert abs(sum(alphas) - 1.0) < 1e-5, "Alphas must sum to 1"
+
+    merged_model = models[0]
+
+    with torch.no_grad():
+        # loop through parameters
+        for name, param in merged_model.named_parameters():
+            # merge only task-specific layers
+            if ("lstm" in name) or ("fc" in name) or (merge_layer4 and "cnn.5" in name):
+                # weighted sum of corresponding parameters
+                merged_data = sum(alpha * m.state_dict()[name].data for alpha, m in zip(alphas, models))
+                param.data.copy_(merged_data)
+
+    return merged_model
 
 
 def merge_models(model1, model2, alpha=0.5):
-    """
-    Merge model2 into model1 (in-place).
-    The final weights are written directly into model1.
-    """
     with torch.no_grad():
         for p1, p2 in zip(model1.parameters(), model2.parameters()):
             p1.data.copy_(alpha * p1.data + (1 - alpha) * p2.data)
@@ -450,7 +440,7 @@ class DualChannelLaplaceTransform:
         
        
 
-        # Step 1: Convert to tensor
+        # to tensor
         if isinstance(img, Image.Image):
             tensor = self.to_tensor(img).unsqueeze(0)  # [1,C,H,W]
         elif isinstance(img, np.ndarray):
@@ -463,24 +453,25 @@ class DualChannelLaplaceTransform:
         else:
             raise TypeError(f"Unsupported image type: {type(img)}")
 
-        # Step 2: Grayscale
+        # to gayscale
         if tensor.shape[1] == 3:
             gray = KC.rgb_to_grayscale(tensor)
         else:
             gray = tensor
 
         # avoid resizing - stretching or proportsional 
-        # Step 3: Proportional resize 
+        # this part is done separatley and differently in other script
+        # when resising with aspect ratio
         #gray = self._resize_proportional(gray)
 
-        # Step 4: Augmentation (if training)
+        # augmentation only (if training)
         if self.train:
             gray = self.augment(gray)
 
-        # Step 5: Contrast stretch
+        # Some conctrast
         gray = self._contrast_stretch(gray, *self.contrast_clip)
 
-        # Step 6: Sharpen
+        # bit sharpening
         blurred = KF.gaussian_blur2d(gray, (3, 3), (1.0, 1.0))
         sharpened = torch.clamp(gray + self.sharpen_strength * (gray - blurred), 0.0, 1.0)
 
@@ -490,13 +481,7 @@ class DualChannelLaplaceTransform:
 
 class OCRDataset(Dataset):
     def __init__(self, label_file, image_dir, transform=None, dataSrc = None):
-        """
-        Args:
-            label_file (str): Path to label file in format 'image_name|text'
-            image_dir (str): Directory with images
-            char_to_idx (dict): Mapping from characters to indices
-            transform (callable, optional): Transform applied to the image
-        """
+
         self.image_dir = image_dir
         self.transform = transform
         self.samples = []
@@ -612,10 +597,11 @@ class CRNN(nn.Module):
         resnet.conv1 = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
 
         self.cnn = nn.Sequential(*list(resnet.children())[:-2])
-
         if freeze_cnn:
-            for param in self.cnn.parameters():
-                param.requires_grad = False
+            for name, param in self.cnn.named_parameters():
+                if "layer4" not in name: ## layer 4 trainiable. keep 1-3 as resnet have
+                    param.requires_grad = False
+
 
         with torch.no_grad():
             #dummy_input = torch.zeros(1, in_channels, 100)
@@ -636,11 +622,10 @@ class CRNN(nn.Module):
         x = self.cnn(x)
         x = F.adaptive_avg_pool2d(x, (1, None))       # Collapse height to 1 → [B, C, 1, W]
         x = x.squeeze(2).permute(0, 2, 1) # Convert to sequence format → [B, W, C]
-        
+  
         # Pass through BiLSTMs
         x, _ = self.lstm1(x)
         x, _ = self.lstm2(x)
-
         # Final prediction
         x = self.fc(x)
 
@@ -654,7 +639,7 @@ class CRNN(nn.Module):
 
 
 #init
-model = CRNN(num_classes=num_classes,img_height=64,in_channels=1)
+model = CRNN(num_classes=num_classes,img_height=64,in_channels=1,freeze_cnn=True)
 
 def ctc_greedy_decoder(preds, blank=0):
     decoded = []
@@ -715,8 +700,7 @@ elif [myvars['data'] == "IAM64"]:
     dir_path = myvars['imgFolder_IAM64']+'/*/*.png'
  """
 print("preparing IAM64")    
-#process IAM64 prepared
-#if myvars['data'] == "IAM64":
+
 label_file=myvars['label_file_IAM64']
 dir_path = myvars['imgFolder_IAM64']+'/*/*.png'
 with open(label_file, 'r', encoding='utf-8') as f:
@@ -725,29 +709,20 @@ with open(label_file, 'r', encoding='utf-8') as f:
             folder_image_name, text = line.strip().split(" ",1)
             folder, image_name =  folder_image_name.strip().split(",")
             dictonaryLabels.setdefault(folder+"/"+image_name, []).append(text)
-
-            #self.samples.append((folder+"/"+image_name+".png", text))
         except:
             print(line)
 
 
-# Group images by their dimension; tuple -> list
 listing = glob.glob(dir_path)
 for file_name in listing:
 
-    # Construct full file path
-    # Open and find the image size
     with Image.open(file_name) as img:
         path = Path(file_name)
         os.path.split(path.parent.absolute())[1]
         label = os.path.split(path.parent.absolute())[1]+"/"+ os.path.basename(path)
         label = label.replace(".png","")
-        #print(label)
-
         dictionary.setdefault(img.size, []).append(file_name+"|"+"".join((dictonaryLabels[label])))
 
-        #print(type(img.size))
-        #print(f"{file_name}: {img.size}")
 #--------------------------------------------------
 ## process custom
 label_file=myvars['label_file_custom']
@@ -806,7 +781,8 @@ with open(label_file, 'r', encoding='utf-8') as f:
             folder_image_name, text = line.strip().split("|",1)
             dictonaryLabels.setdefault(folder_image_name, []).append(text)                
         except:
-            print(line)
+            #print(line)
+            #print("exception")
             continue
 
 
@@ -834,15 +810,6 @@ for file_name in listing:
 
 print("Dataloaders")
 
-#print(dictionary[(1661, 89)][1])
-#iterate_over_dict()
-#print(len(dictionary))
-
-
-
-
-
- # Create dataset
 
 
 transform = DualChannelLaplaceTransform(train=True)
@@ -854,81 +821,19 @@ for key,value in sorted(dictionary.items()):
     dataloaders.append(DataLoader(DictDataset(value,transform),   prefetch_factor=2,  batch_size=4, shuffle=True, collate_fn=collate_fn, num_workers=2,pin_memory=True, persistent_workers=True  ))
     
 
-#dataloader_groups = chunk_dataloaders(dataloaders, n_chunks=100)
-
-#dataSrc = "En"  #default
-
-#if len( sys.argv ) == 2:
-#    dataSrc = 'custom' if 'custom' in sys.argv[1] else dataSrc
-    
-
-#print(dataSrc)
 
 
 s = string.ascii_letters
 
 
-#train_dataset = None
 
 
-#if dataSrc == 'En' :
-#    train_dataset = OCRDataset(
-#        
-#    label_file="data/English_data/IAM64_train.txt",
-#    image_dir="data/English_data/IAM64-new/train/",
-#    transform=transform,
-#    dataSrc='En'
-#)
-#else:     ##can specify that its "custom" dataset. 
-#    train_dataset = OCRDataset(
-#
-#    label_file="data/Custom/trainingImages/targetLabels.txt",
-#    image_dir="data/Custom/trainingImages/allImg/",
-#    transform=transform,
-#    dataSrc='custom'
-#    )
-#sampler = WidthBucketSampler(train_dataset, batch_size=8, num_buckets=10, shuffle=True)
-
-""" dataloader = DataLoader(
-    train_dataset,
-    batch_size=8,
-    shuffle=True, 
-    collate_fn=collate_fn,
-    num_workers=os.cpu_count(),       # Suggestion: speed up data loading
-    pin_memory=True                   # Optional: improves transfer to GPU if using CUDA
-) """
-
-
-#print("exit")
-#import sys
-#sys.exit()
 
 
 # Define loss function
 criterion = nn.CTCLoss(blank=0, zero_infinity=True)
 
-# Define optimizer
 
-#so far super slowley but eventually best improves
-#optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)  
-
-
-#images, targets, input_lengths, target_lengths = next(iter(dataloader))
-
-#checkpoint = torch.load("models/crnn_ctc_model_gNJnJ_500_ep_18.pth", map_location="cuda")
-
-#checkpoint = torch.load("/home/martinez/TUS/DISSERT/models/crnn_ctc_model_vrdVe_500_ep_8.pth", map_location="cuda")
-#checkpoint = torch.load("crnn_ctc_model_CEQgf_500_ep_1.pth", map_location="cuda")
-
-#checkpoint = torch.load("models/crnn_ctc_model_epoch373.pth", map_location="cuda")
-
-#model.load_state_dict(checkpoint)
-
-#aggressive warm ups
-#optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=3e-4)  
-#optimizer = torch.optim.Adam(model.parameters(), lr=8e-4, weight_decay=2e-4)  
-
-#   optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
 optimizer = torch.optim.Adam(
     model.parameters(),
     lr=1e-3,      # safer start
@@ -936,13 +841,7 @@ optimizer = torch.optim.Adam(
     eps=1e-8,
     weight_decay=0
 )
-""" optimizer = torch.optim.AdamW(
-    model.parameters(),
-    lr=1e-3,          # max (start) LR
-    betas=(0.9, 0.999),
-    eps=1e-8,
-    weight_decay=1e-4 # small weight decay helps avoid overfitting
-) """
+
 
 #scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.1)
 
@@ -952,10 +851,6 @@ scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
     T_max=400,   # number of epochs until LR restarts (here: full run)
     eta_min=1e-6 # minimum LR at the end
 )
-#model.load_state_dict(checkpoint["model_state_dict"])
-#optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-#start_epoch = checkpoint["epoch"] + 1
-#loss = checkpoint["loss"]
 
 
 
@@ -965,15 +860,7 @@ device = torch.device("cuda")
 model = model.to(device)    
 
 
-"""  from torchvision.transforms.functional import to_pil_image
 
-    img_single = img_tensor[0]
-
-    # View each channel separately
-    to_pil_image(img_single[0]).show(title="Channel 0 (Sharpened)")
-    to_pil_image(img_single[1]).show(title="Channel 1 (Laplace)")
-
-    """
 import itertools
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:1024"
 #train(model, dataloader, optimizer, ctc_loss, device, 2);
@@ -986,42 +873,42 @@ wait_until_enough_gpu_memory(min_memory_available)
 #infinite_loaders = [make_infinite(dl) for dl in dataloader_groups]
 
 from torch.utils.data import ConcatDataset, DataLoader
-""" 
-all_datasets = []
-for group in dataloader_groups:
-    all_datasets.extend(group.datasets)   # assuming each loader came from a dataset
 
-
-merged_dataset = ConcatDataset(all_datasets)
-# Single efficient DataLoader
-train_loader = DataLoader(
-    merged_dataset,
-    batch_size=64,
-    shuffle=True,
-    num_workers=4,       # much faster if you have CPUs
-    pin_memory=True,     # speedup GPU transfer
-    drop_last=True
-) """
 print("training")
 scaler = torch.cuda.amp.GradScaler()   # put this before training loop
-
+#res1 = None
+#res2 = None
 countr = 0
 objectSaved = False
 res = None
 best_models = []
 for batch in  itertools.chain(*dataloaders):
-    
-    """ if objectSaved:
-        model = torch.load(dictionaryModels[res+"_path"], map_location="cuda")
-        state_dict = model.state_dict() 
-        dictionaryModels.clear() 
-        objectSaved = False """
+    if countr > 0:
+       best_models.append(dictionaryModels[res]) 
+    if len(best_models)==2:
+        #merge
+        #save
+        #leave in list one merged element as single element
+        
+        print(dictionaryModels[res+"_path"])
 
+        #model = merge_models(best_models[0],best_models[1], alpha=0.8)
+        merged_model = merge_task_specific_models([best_models[0], best_models[1]], alphas=[0.5, 0.5], merge_layer4=True)
+        best_models.clear()
+
+        best_models.append(merged_model)
+        print("epocs",epoch+1)
+        
+        #optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)  # reset optimizer
+        if countr % 1000 == 0:
+            torch.save(best_models[0], dictionaryModels[res+"_path"])
+        dictionaryModels.clear()
+    
     random_level2 = random.choices(s, k=5)
     res = ''.join(random_level2)
+
     model.train()
     best_val_loss = float('inf')
-
     
     countr+=1
     print(countr)   
@@ -1090,44 +977,8 @@ for batch in  itertools.chain(*dataloaders):
             dictionaryModels[res+"_path"]=model_path
             #dictionaryModels.setdefault(res, []).append(model.state_dict())
             #dictionaryModels.setdefault(res+"_path", []).append(model_path)
-
+            modelInTraining = res
             #torch.save(model.state_dict(), model_path)
             #print(f"✅ Saved new best model: {model_path}")
     
-    if len(dictionaryModels)>2:
-        objectSaved = True  ## 
-        print(res)
-        print(dictionaryModels[res+"_path"])
-        model = merge_models(model,dictionaryModels[res], alpha=0.7)
-        print("epocs",epoch+1)
-        print("out from epocs; Saving the best")
-        # reinit new model ? 
-        #model = CRNN(num_classes=num_classes, img_height=64, in_channels=1)
-        """ model = merge_models_safe(
-            model,
-            dictionaryModels[res],
-            alpha=0.6,
-            num_classes=num_classes,   # REQUIRED by CRNN
-            img_height=64,             # if your CRNN needs this
-            in_channels=1              # grayscale input
-        ) """
-        optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)  # reset optimizer
-        #optimizer = torch.optim.Adam(
-        #   model.parameters(),
-        #    lr=1e-3,      # safer start
-        #    betas=(0.9, 0.999),
-        #    eps=1e-8,
-        #    weight_decay=0
-        #)
-        #scaler = torch.cuda.amp.GradScaler()  # optionally reset scaler too
-        #model.load_state_dict(state)
-        #model.to(images.device)
-        torch.save(model, dictionaryModels[res+"_path"])
-        
-
-
-    
-    best_models.append((model_path, best_val_loss))
-    #merge and save 
-    
-    #save previously best model 
+   

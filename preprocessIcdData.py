@@ -3,7 +3,6 @@ from PIL import Image
 import torch
 import os
 import cv2
-#from realesrgan import RealESRGANer
 from basicsr.archs.rrdbnet_arch import RRDBNet
 
 import cv2
@@ -39,14 +38,7 @@ def wait_until_enough_gpu_memory(min_memory_available, max_retries=10, sleep_tim
 
 
 def resize_keep_aspect(img, target_h=64):
-    """
-    Resize image to target height while keeping aspect ratio.
-    Does not pad or crop — only resizes proportionally.
 
-    Args:
-        img: input image (grayscale or color)
-        target_h: desired height
-    """
     h, w = img.shape[:2]
 
     # Compute new width maintaining aspect ratio
@@ -56,18 +48,7 @@ def resize_keep_aspect(img, target_h=64):
     return resized
 
 
-""" def resize_keep_aspect(img, target_h, max_w=None):
-    h, w = img.shape[:2]
-    scale = target_h / h
-    new_w = int(w * scale)
-    resized = cv2.resize(img, (new_w, target_h), interpolation=cv2.INTER_AREA)
-    
-    if max_w and new_w < max_w:
-        # pad to max width with white (255) or black depending on background
-        pad_width = max_w - new_w
-        resized = cv2.copyMakeBorder(resized, 0, 0, 0, pad_width,
-                                     cv2.BORDER_CONSTANT, value=(255, 255, 255))
-    return resized """
+
 min_memory_available = 2 * 1024 * 1024 * 1024  # 2GB
 
 # Example:

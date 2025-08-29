@@ -596,7 +596,7 @@ exe = True
 
 
     
-
+import re
 if(exe):
 
     
@@ -611,7 +611,12 @@ if(exe):
     
    
     for singleModel in glob.glob( "models/*.pth"):
-        
+                
+        """      regexp = re.compile(r'.*_[5-90-9]_.*')
+                if regexp.search(singleModel):
+                    print('matched')
+            """
+   
         model = torch.load(singleModel, map_location="cpu")
         state_dict = model.state_dict()
         #state = model.load_state_dict(torch.load(singleModel))  # or your path

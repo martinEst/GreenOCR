@@ -343,7 +343,7 @@ def pad_to_required_width(img, target_length, downsample_factor=32, pad_color=25
 ## ctc 
 ##--------------------------------------------------------
 
-def collate_fn(batch):
+""" def collate_fn(batch):
     images, texts, widths = zip(*batch)
     max_w = max(widths)
     
@@ -356,7 +356,39 @@ def collate_fn(batch):
     targets = torch.cat(texts)
     input_lengths = torch.tensor([img.shape[-1] for img in images], dtype=torch.long)
 
-    return torch.stack(padded_imgs),targets, input_lengths,target_lengths
+    return torch.stack(padded_imgs),targets, input_lengths,target_lengths """
+import torch.nn.functional as F
+def collate_fn_dynamic(batch, downsample_factor=32, max_width=2048):
+    """
+    Pads images only if needed based on their label length,
+    then pads all images to the max width in the batch.
+    """
+    images, labels, widths = zip(*batch)
+    processed_imgs = []
+
+    # Step 1: ensure minimum width per label
+    for img, label in zip(images, labels):
+        seq_len = img.shape[2] // downsample_factor
+        pad_w = 0
+        if len(label) > seq_len:
+            pad_w = (len(label) * downsample_factor) - img.shape[2]
+            if pad_w + img.shape[2] > max_width:
+                pad_w = max_width - img.shape[2]  # cap width
+            img = F.pad(img, (0, pad_w, 0, 0), value=1.0)
+        processed_imgs.append(img)
+
+    # Step 2: pad all images to batch max width
+    batch_max_w = min(max(img.shape[2] for img in processed_imgs), max_width)
+    padded_imgs = [F.pad(img, (0, batch_max_w - img.shape[2], 0, 0), value=1.0)
+                   for img in processed_imgs]
+
+    targets = torch.cat(labels)
+    input_lengths = torch.tensor([img.shape[2] // downsample_factor for img in padded_imgs], dtype=torch.long)
+    target_lengths = torch.tensor([len(l) for l in labels], dtype=torch.long)
+
+    return torch.stack(padded_imgs), targets, input_lengths, target_lengths
+
+
 
 #    return padded_images_tensor, targets, input_lengths, target_lengths """
 
@@ -781,7 +813,7 @@ transform = DualChannelLaplaceTransform(train=True)
 dataloaders  = []
 for key,value in sorted(dictionary.items()): 
     #print(key)
-    dataloaders.append(DataLoader(DictDataset(value,transform),   prefetch_factor=1,  batch_size=4, shuffle=False, collate_fn=collate_fn, num_workers=2,pin_memory=False, persistent_workers=False  ))
+    dataloaders.append(DataLoader(DictDataset(value,transform),   prefetch_factor=1,  batch_size=4, shuffle=False, collate_fn=collate_fn_dynamic, num_workers=2,pin_memory=False, persistent_workers=False  ))
     
 
 

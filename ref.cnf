@@ -1,13 +1,22 @@
 
-model_interface = models/crnn_ctc_model_epoch7.pth
-model_traing = new
+model_interface = models/crnn_ctc_model_epochqsOvE.pth
+model_traing =  models/crnn_ctc_model_epochqsOvE.pth
 
 
 data = custom
 
 label_file_custom=data/Custom/trainingImages/targetLabels.txt
-label_file_IAM64=data/English_data/IAM64_train.txt
-
 imgFolder_custom = data/Custom/trainingImages/allImg
+
+
+label_file_IAM64=data/English_data/IAM64_train.txt
 imgFolder_IAM64 = data/English_data/IAM64-new/train
 
+
+label_file_ICDAR=data/ICDAR/targets.txt
+imgFolder_ICDAR=data/ICDAR/allImg 
+
+
+imgTest = test_images
+
+all_models = models

@@ -307,7 +307,7 @@ from PIL import Image, ImageOps
 import os
 
 
-def pad_to_required_width(img, target_length, downsample_factor=32, pad_color=255, max_width=None):
+def pad_to_required_width(img, target_length, downsample_factor=32, pad_color=255, max_width=2048):
     """
     Pad grayscale PIL image so it's wide enough for CTC training.
     Ensures width >= target_length * stride AND is a multiple of stride.
@@ -359,34 +359,26 @@ def pad_to_required_width(img, target_length, downsample_factor=32, pad_color=25
     return torch.stack(padded_imgs),targets, input_lengths,target_lengths """
 import torch.nn.functional as F
 def collate_fn_dynamic(batch, downsample_factor=32, max_width=2048):
-    """
-    Pads images only if needed based on their label length,
-    then pads all images to the max width in the batch.
-    """
-    images, labels, widths = zip(*batch)
-    processed_imgs = []
+    images, labels, widths, targets_lengths = zip(*batch)
 
-    # Step 1: ensure minimum width per label
-    for img, label in zip(images, labels):
-        seq_len = img.shape[2] // downsample_factor
-        pad_w = 0
-        if len(label) > seq_len:
-            pad_w = (len(label) * downsample_factor) - img.shape[2]
-            if pad_w + img.shape[2] > max_width:
-                pad_w = max_width - img.shape[2]  # cap width
-            img = F.pad(img, (0, pad_w, 0, 0), value=1.0)
-        processed_imgs.append(img)
+    # Compute max width for this batch
+    batch_max_w = min(max(img.shape[2] for img in images), max_width)
 
-    # Step 2: pad all images to batch max width
-    batch_max_w = min(max(img.shape[2] for img in processed_imgs), max_width)
-    padded_imgs = [F.pad(img, (0, batch_max_w - img.shape[2], 0, 0), value=1.0)
-                   for img in processed_imgs]
+    padded_imgs = []
+    for img in images:
+        pad_w = batch_max_w - img.shape[2]
+        if pad_w > 0:
+            img = F.pad(img, (0, pad_w, 0, 0), value=1.0)  # pad right with white
+        padded_imgs.append(img)
 
     targets = torch.cat(labels)
     input_lengths = torch.tensor([img.shape[2] // downsample_factor for img in padded_imgs], dtype=torch.long)
     target_lengths = torch.tensor([len(l) for l in labels], dtype=torch.long)
 
     return torch.stack(padded_imgs), targets, input_lengths, target_lengths
+
+
+
 
 
 
@@ -453,14 +445,10 @@ def chunk_dataloaders(dataloaders, n_chunks=10):
 import math
 import random
 from torch.utils.data import Sampler
-
-class DualChannelLaplaceTransform:
+class SafeOCRTransform:
     def __init__(self, target_height=64, max_width=None, 
-                 train=True, output_channels=1,  # <-- NEW FLAG
-                 sharpen_strength=1.5, contrast_clip=(0.01, 0.99)):
-        """
-        output_channels: 1 (single channel) or 2 (sharpened + laplace)
-        """
+                 train=True, output_channels=1,
+                 sharpen_strength=1.0, contrast_clip=(0.01, 0.99)):
         self.target_height = target_height
         self.max_width = max_width
         self.train = train
@@ -469,66 +457,185 @@ class DualChannelLaplaceTransform:
         self.contrast_clip = contrast_clip
         self.to_tensor = T.ToTensor()
 
-        # Augmentations only used during training
+        # Safe augmentations
         self.augment = torch.nn.Sequential(
-            KA.RandomAffine(degrees=2.5, translate=(0.02, 0.02), p=0.5),
-            KA.RandomBrightness(0.1, p=0.5),
-            KA.RandomContrast(0.1, p=0.5),
-            KA.RandomGaussianNoise(mean=0.0, std=0.01, p=0.2),
+            KA.RandomAffine(degrees=2.0, translate=(0.01, 0.01), p=0.5),
+            KA.RandomBrightness(0.05, p=0.5),
+            KA.RandomContrast(0.05, p=0.5),
+            KA.RandomGaussianNoise(mean=0.0, std=0.005, p=0.2),
         )
 
     def _contrast_stretch(self, img, low=0.01, high=0.99):
-        if img.dim() == 4:
+        """Stretch contrast safely, avoid division by near-zero"""
+        if img.dim() == 4:  # batch dim
             return torch.stack([self._contrast_stretch(single_img, low, high) for single_img in img])
         stretched = torch.empty_like(img)
         for c in range(img.shape[0]):
             flat = img[c].flatten()
-            low_val = flat.kthvalue(int(flat.numel() * low)).values
-            high_val = flat.kthvalue(int(flat.numel() * high)).values
-            stretched[c] = torch.clamp((img[c] - low_val) / (high_val - low_val + 1e-6), 0, 1)
+            low_val = flat.kthvalue(max(1, int(flat.numel() * low))).values
+            high_val = flat.kthvalue(max(2, int(flat.numel() * high))).values
+            denom = max(high_val - low_val, 1e-4)
+            stretched[c] = torch.clamp((img[c] - low_val) / denom, 0.0, 1.0)
         return stretched
 
     def __call__(self, img):
-        
-       
-
-        # to tensor
+        # Convert to tensor
         if isinstance(img, Image.Image):
-            tensor = self.to_tensor(img).unsqueeze(0)  # [1,C,H,W]
+            tensor = self.to_tensor(img)  # [C,H,W]
         elif isinstance(img, np.ndarray):
-           tensor = torch.from_numpy(img).float().unsqueeze(0)
+            tensor = torch.from_numpy(img).float()
         elif isinstance(img, torch.Tensor):
-            if img.ndim == 3:
-                tensor = img.unsqueeze(0)
-            else:
-                tensor = img
+            tensor = img.float()
         else:
             raise TypeError(f"Unsupported image type: {type(img)}")
 
-        # to gayscale
-        if tensor.shape[1] == 3:
-            gray = KC.rgb_to_grayscale(tensor)
-        else:
-            gray = tensor
+        # Add channel dim if missing
+        if tensor.ndim == 2:
+            tensor = tensor.unsqueeze(0)
+        elif tensor.ndim == 3 and tensor.shape[0] == 3:
+            tensor = KC.rgb_to_grayscale(tensor)
 
-        # avoid resizing - stretching or proportsional 
-        # this part is done separatley and differently in other script
-        # when resising with aspect ratio
-        #gray = self._resize_proportional(gray)
-
-        # augmentation only (if training)
+        # Resize to target height while keeping aspect ratio
+        _, h, w = tensor.shape
+        scale = self.target_height / h
+        new_w = min(int(w * scale), self.max_width) if self.max_width else int(w * scale)
+        tensor = F.interpolate(tensor.unsqueeze(0), size=(self.target_height, new_w), mode='bilinear', align_corners=False).squeeze(0)
+        tensor = tensor.unsqueeze(0) if tensor.ndim == 3 else tensor  # add batch dim for Kornia
+        # Apply augmentation
         if self.train:
-            gray = self.augment(gray)
+            tensor = self.augment(tensor)
+        if tensor.shape[0] == 1:  # remove batch dim after augment
+            tensor = tensor.squeeze(0)
 
-        # Some conctrast
-        gray = self._contrast_stretch(gray, *self.contrast_clip)
 
-        # bit sharpening
-        blurred = KF.gaussian_blur2d(gray, (3, 3), (1.0, 1.0))
-        sharpened = torch.clamp(gray + self.sharpen_strength * (gray - blurred), 0.0, 1.0)
+        # Safe contrast stretch
+        tensor = self._contrast_stretch(tensor, *self.contrast_clip)
 
-        return sharpened.squeeze(0)  # [1,H,W] -> remove batch dim for dataset __getitem__
-                
+        # Optional mild sharpening
+        blurred = KF.gaussian_blur2d(tensor, (3, 3), (1.0, 1.0))
+        tensor = torch.clamp(tensor + self.sharpen_strength * (tensor - blurred), 0.0, 1.0)
+
+        return tensor  # [1,H,W]
+
+import torch.nn.functional as F
+import torchvision.transforms as T
+from PIL import Image
+import kornia.augmentation as KA
+import kornia.color as KC
+import kornia.filters as KF
+import numpy as np
+
+
+# --------------------------
+# Transform Class
+# --------------------------
+class DualChannelLaplaceTransform:
+    def __init__(self,
+                 target_height=64,
+                 max_width=2048,
+                 train=True,
+                 output_channels=1,          # 1 = grayscale, 2 = grayscale + laplace
+                 sharpen_strength=1.5,
+                 contrast_clip=(0.01, 0.99),
+                 augment_params=None):
+        self.target_height = target_height
+        self.max_width = max_width
+        self.train = train
+        self.output_channels = output_channels
+        self.sharpen_strength = sharpen_strength
+        self.contrast_clip = contrast_clip
+        self.to_tensor = T.ToTensor()
+
+        # Default augmentations
+        if augment_params is None:
+            self.augment = torch.nn.Sequential(
+                KA.RandomAffine(degrees=2.5, translate=(0.02, 0.02), p=0.5),
+                KA.RandomBrightness(0.1, p=0.5),
+                KA.RandomContrast(0.1, p=0.5),
+                KA.RandomGaussianNoise(mean=0.0, std=0.01, p=0.2),
+            )
+        else:
+            self.augment = augment_params
+
+    def _contrast_stretch(self, img, low=0.01, high=0.99):
+        """Clip and stretch contrast to [0,1]."""
+        if img.dim() == 4:  # batch
+            return torch.stack([self._contrast_stretch(x, low, high) for x in img])
+        stretched = torch.empty_like(img)
+        for c in range(img.shape[0]):
+            flat = img[c].flatten()
+            low_val = flat.kthvalue(max(int(flat.numel() * low), 1)).values
+            high_val = flat.kthvalue(min(int(flat.numel() * high), flat.numel() - 1)).values
+            stretched[c] = torch.clamp((img[c] - low_val) / (high_val - low_val + 1e-6), 0.0, 1.0)
+        return stretched
+
+    def _pad_ctc_safe(self, tensor, min_width=None, max_width=None):
+        """Pad width to be at least min_width and at most max_width, tensor must be [C,H,W]."""
+        if tensor.ndim != 3:
+            raise ValueError(f"Expected 3D tensor [C,H,W], got {tensor.shape}")
+        
+        C, H, W = tensor.shape
+        new_width = W
+        if min_width is not None:
+            new_width = max(W, min_width)
+        if max_width is not None:
+            new_width = min(new_width, max_width)
+        pad_w = new_width - W
+        if pad_w > 0:
+            tensor = F.pad(tensor, (0, pad_w, 0, 0), value=1.0)  # pad width on right
+        return tensor
+
+    def __call__(self, img, min_width=None):
+        """Convert PIL / ndarray / tensor to [C,H,W] tensor ready for CTC."""
+        # Convert to tensor
+        if isinstance(img, Image.Image):
+            tensor = self.to_tensor(img)
+        elif isinstance(img, np.ndarray):
+            tensor = torch.from_numpy(img).float()
+            if tensor.ndim == 2:  # H x W → 1 x H x W
+                tensor = tensor.unsqueeze(0)
+            elif tensor.ndim == 3:  # H x W x C → C x H x W
+                tensor = tensor.permute(2, 0, 1)
+        elif isinstance(img, torch.Tensor):
+            if img.ndim == 2:
+                tensor = img.unsqueeze(0)
+            elif img.ndim == 3:
+                tensor = img
+            else:
+                raise ValueError(f"Unsupported tensor shape: {img.shape}")
+        else:
+            raise TypeError(f"Unsupported image type: {type(img)}")
+
+        # Convert RGB to grayscale if needed
+        if tensor.shape[0] == 3:
+            tensor = KC.rgb_to_grayscale(tensor)
+
+        # Augmentation
+        if self.train:
+            tensor = self.augment(tensor)
+
+
+        # Contrast stretch and sharpening
+        tensor = self._contrast_stretch(tensor, *self.contrast_clip)
+        if tensor.ndim == 3:
+            tensor = tensor.unsqueeze(0)  # [1,C,H,W] for Kornia
+        blurred = KF.gaussian_blur2d(tensor, (3, 3), (1.0, 1.0))
+
+        #tensor = tensor.unsqueeze(0)                     # [1,C,H,W]
+        tensor = torch.clamp(tensor + self.sharpen_strength * (tensor - blurred), 0.0, 1.0)
+        #tensor = blurred.squeeze(0)          
+        # Laplacian channel
+        tensor = tensor.squeeze(0)
+        if self.output_channels == 2:
+            laplace = KF.laplacian(tensor, kernel_size=3)
+            laplace = (laplace - laplace.min()) / (laplace.max() - laplace.min() + 1e-6)
+            tensor = torch.cat([tensor, laplace], dim=0)
+
+        # CTC padding
+        tensor = self._pad_ctc_safe(tensor, min_width=min_width, max_width=self.max_width)
+
+        return tensor  # [C,H,W] guaranteed
+
 
 
 
@@ -540,44 +647,104 @@ from torchvision import models
 import torch
 import torch.nn as nn
 import torchvision.models as models
+import torch
+from torch.utils.data import Dataset, DataLoader
+from PIL import Image
+import torchvision.transforms as T
+# --------------------------
+# Dataset Class
+# --------------------------
 class DictDataset(Dataset):
-    def __init__(self, datasets_dict, transform=None):
-        # Flatten dictionary into list of (dataset_name, path, label)
+    def __init__(self, datasets_dict, transform=None, char_to_idx=None, downsample_factor=32):
         self.samples = []
-       # for name, items in datasets_dict.items():
         for entry in datasets_dict:
-            path, label = entry.split("|", 1)  # split only on first pipe
+            path, label = entry.split("|", 1)
             self.samples.append((path, label))
-    
+
         self.transform = transform
+        self.char_to_idx = char_to_idx
+        self.downsample_factor = downsample_factor
 
     def __len__(self):
         return len(self.samples)
 
-
     def __getitem__(self, idx):
-        img_name, text = self.samples[idx]
-        img_path = img_name
+        img_path, text = self.samples[idx]
+        pil_img = Image.open(img_path).convert("L")
 
-        # Load grayscale image
-        img_pil = Image.open(img_path).convert("L")
-        img_pil = pad_to_required_width(img_pil, target_length=len(text))
-        w, h = img_pil.size
-        # Convert to tensor [1, H, W]
-        img_np = np.array(img_pil, dtype=np.float32)
-        img_tensor = torch.from_numpy(img_np).unsqueeze(0)  # [1, H, W]
-        
-        # Apply transform if provided
+        if self.char_to_idx is None:
+            raise ValueError("char_to_idx dictionary is required")
+
+        # Compute min width for CTC
+        min_width = len(text) * self.downsample_factor
+
+        # Apply transform
         if self.transform:
-            img_tensor = self.transform(img_tensor)
+            img_tensor = self.transform(pil_img, min_width=min_width)
+        else:
+            img_tensor = T.ToTensor()(pil_img)
+
+        if img_tensor.ndim != 3:
+            raise ValueError(f"Transform must return [C,H,W], got {img_tensor.shape}")
 
         # Encode label
-        label_tensor = torch.tensor(
-            [char_to_idx[c] for c in text],
-            dtype=torch.long
-        )
-        
-        return img_tensor, label_tensor, w
+        label_tensor = torch.tensor([self.char_to_idx[c] for c in text], dtype=torch.long)
+
+        # Input length after downsampling
+        _, _, W = img_tensor.shape
+        input_length = W // self.downsample_factor
+        target_length = len(label_tensor)
+
+        # Unsqueeze for batch stacking [1,C,H,W]
+        return img_tensor, label_tensor, input_length, target_length
+
+
+
+
+
+def collate_fn_ctc(batch, downsample_factor=32, pad_value=1.0):
+    """
+    Collate function for CTC training.
+    Pads images in width dynamically per batch, concatenates labels.
+    
+    batch: list of tuples (img_tensor [1,C,H,W], label_tensor, input_len, target_len)
+    """
+    images, labels, input_lengths, target_lengths = zip(*batch)
+
+    # Remove extra batch dimension from dataset [1,C,H,W] -> [C,H,W]
+    images = [img.squeeze(0) for img in images]
+
+    # Find max width in this batch
+    #max_width = max(img.shape[2] for img in images)  # img: [C,H,W]
+    max_width = max(img.shape[-1] for img in images)
+    # Pad each image to max_width
+    padded_images = []
+    new_input_lengths = []
+    for img in images:
+        if img.ndim == 2:  # [H,W]
+            img = img.unsqueeze(0)  # -> [1,H,W]
+        C, H, W = img.shape
+        pad_w = max_width - W
+        if pad_w > 0:
+            img = F.pad(img, (0, pad_w, 0, 0), value=pad_value)
+        padded_images.append(img)
+        new_input_lengths.append(max_width // downsample_factor)
+
+    # Stack to [B,C,H,W]
+    images_tensor = torch.stack(padded_images)
+
+    # Concatenate labels
+    labels_tensor = torch.cat(labels)
+
+    input_lengths_tensor = torch.tensor(new_input_lengths, dtype=torch.long)
+    target_lengths_tensor = torch.tensor(target_lengths, dtype=torch.long)
+
+    # Warn about target > input
+    for i, (t_len, i_len) in enumerate(zip(target_lengths_tensor, input_lengths_tensor)):
+        if t_len > i_len:
+            print(f"⚠️ Batch sample {i}: target length {t_len} > input length {i_len}")
+
+    return images_tensor, labels_tensor, input_lengths_tensor, target_lengths_tensor
 
 
 
@@ -616,6 +783,11 @@ class CRNN(nn.Module):
         self.fc = nn.Linear(512, num_classes)
 
     def forward(self, x):
+        # Ensure [B, C, H, W]
+        if x.ndim == 3:   # single image [C, H, W]
+            x = x.unsqueeze(0)
+        elif x.ndim == 2:  # grayscale without channel [H, W]
+            x = x.unsqueeze(0).unsqueeze(0)
         x = self.normalize(x)
         x = self.cnn(x)
         x = F.adaptive_avg_pool2d(x, (1, None))       # Collapse height to 1 → [B, C, 1, W]
@@ -653,7 +825,23 @@ def make_infinite(dataloader):
 
 #---------------------------------------------------------------------------------------------------
 # exe = True # means model is applied 
+def required_width_for_ctc(target_len, downsample=32, safety=1.1):
+    # T >= 2U-1  =>  width >= (2U-1) * downsample
+    return int(((2*target_len - 1) * downsample) * safety)
 
+from PIL import ImageOps
+
+def pad_to_ctc_safe_width(pil_img, target_len, downsample=32, max_width=None, pad_color=255):
+    need = required_width_for_ctc(target_len, downsample)
+    w, h = pil_img.size
+    new_w = max(w, need)
+    # round up to multiple of downsample
+    new_w = ((new_w + downsample - 1) // downsample) * downsample
+    if max_width is not None:
+        new_w = min(new_w, max_width)
+    if new_w > w:
+        pil_img = ImageOps.expand(pil_img, (0, 0, new_w - w, 0), fill=pad_color)
+    return pil_img
 
 
 exe = False
@@ -813,7 +1001,7 @@ transform = DualChannelLaplaceTransform(train=True)
 dataloaders  = []
 for key,value in sorted(dictionary.items()): 
     #print(key)
-    dataloaders.append(DataLoader(DictDataset(value,transform),   prefetch_factor=1,  batch_size=4, shuffle=False, collate_fn=collate_fn_dynamic, num_workers=2,pin_memory=False, persistent_workers=False  ))
+    dataloaders.append(DataLoader(DictDataset(value,transform,char_to_idx),   prefetch_factor=1,  batch_size=4, shuffle=False, collate_fn=collate_fn_ctc, num_workers=2,pin_memory=False, persistent_workers=False  ))
     
 
 
@@ -961,6 +1149,7 @@ for loader_idx,loader in enumerate(dataloaders):
             with torch.cuda.amp.autocast():  # 🔹 mixed precision zone
                 # Forward
                 #logits = model(images)              # (B, T, C)
+                #images = images.squeeze(1)  # remove extra singleton dim
                 logits = model(images.float())   # full forward in FP32 
 
                 log_probs = F.log_softmax(logits, dim=2)
@@ -973,6 +1162,11 @@ for loader_idx,loader in enumerate(dataloaders):
                 # Safety: skip batch if any target too long
                 if (target_lengths > input_lengths).any():
                     print(f"⚠️ Skipping batch: target longer than input T={T}")
+                    print("target>input")
+                    print("Targets:", targets)
+                    print("Target lengths:", target_lengths)
+                    print("Input lengths:", input_lengths)
+                    print("Example label:", "".join([idx_to_char[i.item()] for i in targets[:target_lengths[0]]]))
                     continue
 
                 # Compute CTC loss
@@ -981,6 +1175,12 @@ for loader_idx,loader in enumerate(dataloaders):
             # Skip invalid loss
             if torch.isnan(loss) or torch.isinf(loss):
                 print("⚠️ Skipping batch due to invalid loss")
+                if loss.isnan():
+                    print("NaN loss detected")
+                    print("Targets:", targets)
+                    print("Target lengths:", target_lengths)
+                    print("Input lengths:", input_lengths)
+                    print("Example label:", "".join([idx_to_char[i.item()] for i in targets[:target_lengths[0]]]))
                 continue
 
             # Backward with scaler

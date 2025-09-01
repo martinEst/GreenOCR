@@ -1,105 +1,60 @@
 import os
 import gc
+import re
+
 import time
 import torch
 import string
+import glob
 import random
 import numpy as np
 import torch.nn as nn
 
-import sys
+
+
+from torchvision import models
+
+
 import kornia as K
 import kornia.color as KC
-import kornia.filters as KF
 import kornia.enhance as KE
+import kornia.filters as KF
+import albumentations as A
+import kornia.geometry as KG
+import torch.nn.functional as F
+
 import kornia.augmentation as K
 import kornia.augmentation as KA
 import torchvision.transforms as T
+from PIL import Image, ImageFilter
+from albumentations.pytorch import ToTensorV2
+from kornia.augmentation import AugmentationSequential
+
+import torchvision.models as models
 import kornia.geometry.transform as KG
 import torchvision.transforms.functional as TF
 
-
-from torch.utils.data import Dataset
 from PIL import Image
-
-
-from torch.utils.data import Dataset
-
-
-
-import torchvision.transforms as T
-import kornia.color as KC
-import kornia.geometry as KG
-import kornia.augmentation as KA
-import kornia.filters as KF
-import torch.nn as nn
-import torchvision.transforms as T
-import kornia.augmentation as KA
-import kornia.color as KC
-import kornia.filters as KF
-import kornia.geometry.transform as KG
-from PIL import Image
-import numpy as np
-
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
-
 from torchvision import transforms
-import torchvision.models as models
-
-from PIL import Image
-
-
-import numpy as np
-from PIL import Image
-from torch.utils.data import Dataset
-
-import os
-import torch
-
 from torch.nn.utils import clip_grad_norm_
-
 import torch.optim as optim
-import torch.nn as nn
-import torch.nn.functional as F
-
-import torchvision.transforms as T
-
-
 from torchvision.transforms import functional as TF
 from torch.nn.utils.rnn import pad_sequence
 from torch.cuda.amp import GradScaler, autocast
 
-
-from torchvision import transforms
-from torchvision import models
 from torchvision.models import resnet50, ResNet50_Weights
-
-
-from PIL import Image, ImageFilter
-from PIL import Image
-
 from pynvml import nvmlInit, nvmlDeviceGetHandleByIndex, nvmlDeviceGetMemoryInfo
 
 
-import albumentations as A
-from albumentations.pytorch import ToTensorV2
-from kornia.augmentation import AugmentationSequential
-import torchvision.models as models
-
-import torchvision.transforms as T
-import kornia.augmentation as KA
 import kornia.color as KC
-import kornia.geometry.transform as KG
-import kornia.filters as KF
-from PIL import Image
-import numpy as np
+
 from basicsr.archs.rrdbnet_arch import RRDBNet
 
 from realesrgan import RealESRGANer
-from PIL import Image
-import torch
-import os
+
+
 import cv2
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
@@ -118,20 +73,7 @@ IMG_HEIGHT = 64
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-## training data has some of germanic scripts and they contain more characters than classical english
 
-
-
-#some special characters that appeared in germanic manuscripts, maybe should be avoided now
-ctc_loss_fn = torch.nn.CTCLoss(blank=0, reduction='mean', zero_infinity=True)
-
-
-""" vocab = ['<blank>'] +  list("abcdefghijklmnopqrstuvwxyz") + \
-        list("ABCDEFGHIJKLMNOPQRSTUVWXYZ") + \
-        list("0123456789") + \
-        list("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~ ")  # include space
-
- """
 
 #vocab = build_vocab()
 vocab = ['<blank>'] + list("ÈĒĖēėěęĚĘëéèÉÊËðÐŊŋ") + list("£§êàâé£§⊥")+['£','ſ','—','“','„','’','ô','é']+ list(string.ascii_letters + string.digits + string.punctuation + " ") + ['ä', 'ö', 'ü', 'Ä', 'Ö', 'Ü', 'ß', 'å', 'Å', 'æ', 'Æ', 'ø', 'Ø']
@@ -141,61 +83,8 @@ num_classes = len(vocab) + 1  # +1 for CTC blank
 BLANK_INDEX = 0
 
 
-
-
-
-
-
-
 gc.collect()  # Python garbage collection
 torch.cuda.empty_cache()  # frees cached memory (not allocated memory)
-
-
-
-  
-
-# -----------------------------
-# Line Segmentation
-# -----------------------------
-
-
-
-# -----------------------------
-# AUGMENTATION
-# -----------------------------
-
-
-
-#few different albumentations approaches
-#------------------
-# albumentations
-# several different function to try  
-
-""" def get_train_transform(image_height=32, image_max_width=2048):
-    return A.Compose([
-        A.Resize(height=image_height, width=image_max_width, interpolation=1, always_apply=True),  # Resize to fixed height
-        A.OneOf([
-            A.MotionBlur(p=0.2),
-            A.MedianBlur(blur_limit=3, p=0.1),
-            A.GaussianBlur(blur_limit=(3, 5), p=0.2),
-        ], p=0.3),
-        A.OneOf([
-            A.GaussNoise(var_limit=(10.0, 50.0), p=0.3),
-            A.ISONoise(p=0.2),
-        ], p=0.3),
-        A.RandomBrightnessContrast(p=0.3),
-        A.Downscale(scale_min=0.3, scale_max=0.7, interpolation=0, p=0.2),
-        A.ToGray(p=1.0),  # Ensure grayscale
-        A.Normalize(mean=(0.5,), std=(0.5,), max_pixel_value=255.0),
-        ToTensorV2()
-    ])
-
- """
-
-# kornia
-
-
-
 
 
 
@@ -223,26 +112,6 @@ def encode_text(text):
 def encode_text(text, char_to_idx):
     """Convert string to list of integer indices (no blank)"""
     return [char_to_idx[c] for c in text if c in char_to_idx]
-
-
-def ctc_greedy_decoder_batch(preds, idx_to_char, blank=0):
-    """
-    Greedy CTC decoding (batch version).
-    - Skips blanks
-    - Deduplicates only consecutive repeats (not across blanks)
-    - Uses idx_to_char to map indices back to string
-    """
-    pred_texts = []
-    decoded = []
-    prev = blank
-    for p in preds:               # loop over timesteps
-        p = p.item() if hasattr(p, "item") else int(p)
-        if p != prev and p != blank:
-            decoded.append(idx_to_char.get(p, ''))
-        prev = p
-    pred_texts.append("".join(decoded))
-    return pred_texts
-
 
 
 
@@ -340,14 +209,7 @@ def ctc_loss(y_pred, labels, input_lengths, label_lengths):
     )
 
 def resize_keep_aspect(img, target_h=64):
-    """
-    Resize image to target height while keeping aspect ratio.
-    Does not pad or crop — only resizes proportionally.
-
-    Args:
-        img: input image (grayscale or color)
-        target_h: desired height
-    """
+   
     h, w = img.shape[:2]
 
     # Compute new width maintaining aspect ratio
@@ -503,14 +365,6 @@ class OCRDataset(Dataset):
         return img_tensor, label_tensor, w
 
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torchvision import models
-import torch
-import torch.nn as nn
-import torchvision.models as models
-import glob
 
 
 class CRNN(nn.Module):
@@ -591,7 +445,6 @@ exe = True
 
 
     
-import re
 if(exe):
 
     
@@ -654,31 +507,12 @@ if(exe):
             #?? can we increase training data from height 64 to 98 ? 
 
             gray = cv2.cvtColor(output_proportional, cv2.COLOR_BGR2GRAY)  # or COLOR_RGB2GRAY depending on your color format
-        # gray = cv2.cvtColor(output_proportional, cv2.COLOR_BGR2GRAY)  # or COLOR_RGB2GRAY depending on your color format
+
             tensor = torch.from_numpy(gray).float() / 255.0  # [H, W]
             tensor = tensor.unsqueeze(0).unsqueeze(0)        # [B=1, C=1, H, W]
-            # Convert to tensor
-            #tensor = torch.from_numpy(gray).float() / 255.0    # normalize 0–1
-            #tensor = tensor.unsqueeze(0).unsqueeze(0)   
-            #maybe we should train on RGB ?
-
-            #tmp solution 
-            #cv2.imwrite("/tmp/enchcned_downsample.png", output_proportional)
-
-            #image = Image.open('/home/martinez/TUS/DISSERT/data/latest/all_images2/Bennett__8e_down.png').convert('L')  # grayscale
-
-            #image2 = Image.open('/home/martinez/TUS/DISSERT/data/customImages/a01-000u-00.png').convert('RGB')  # grayscale
-            #img_tensor = transform(image2).unsqueeze(0).cuda() 
+           
 
             img_tensor = transform(tensor).unsqueeze(0).cuda() 
-
-        
-            #from torchvision.transforms.functional import to_pil_image
-            #to_pil_image(img_tensor[0]).show(title="Channel 0 (Sharpened)")
-
-            #from torchvision.transforms.functional import to_pil_image
-            #to_pil_image(img_tensor[0]).show(title="Channel 0 (Sharpened)")
-
             preds = None
             #with torch.no_grad():
             
@@ -690,14 +524,9 @@ if(exe):
             print(preds)
             decoded_indices = ctc_greedy_decoder(preds[0])
             print(decoded_indices)
-            
         
-        
-            #ocrTxt = ctc_greedy_decoder_batch (decoded_indices, idx_to_char)
             ocrTxt = "".join(idx_to_char[i] for i in decoded_indices)
             print(ocrTxt)
-
-            #ocrTxt = ctc_greedy_decoder_batch (decoded_indices, idx_to_char)
             
             joined_text = ''.join(ocrTxt)
             cleaned_text = ' '.join(joined_text.split())

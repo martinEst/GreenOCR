@@ -9,7 +9,7 @@ for filepath in glob.glob("data/ICDAR/targets.txt"):
             line = line.strip()
             chars.update(line)  # add all characters from the line
 
-
+import copy
 print(chars)
 
 

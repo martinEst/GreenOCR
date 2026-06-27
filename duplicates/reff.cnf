@@ -1,0 +1,14 @@
+
+
+rootFolder = /home/martinez/Downloads/deDRM
+
+#comment extensions key to get all duplicated files, otherwise specific extesnion
+extensions = txt, zip, log, json
+
+binFolder = /home/martinez/Downloads/remUniq
+
+#-1 copy all duplicated files into binFolder. 
+#1  moves duplicated files to binfFolder
+toRemove = 1
+
+

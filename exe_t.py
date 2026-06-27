@@ -75,29 +75,36 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 
-#vocab = build_vocab()
 vocab = ['<blank>'] + list("ÈĒĖēėěęĚĘëéèÉÊËðÐŊŋ") + list("£§êàâé£§⊥")+['£','ſ','—','“','„','’','ô','é']+ list(string.ascii_letters + string.digits + string.punctuation + " ") + ['ä', 'ö', 'ü', 'Ä', 'Ö', 'Ü', 'ß', 'å', 'Å', 'æ', 'Æ', 'ø', 'Ø']
+""" 
+vocab = ['<blank>'] +  punctuation_chars + list("abcdefghijklmnopqrstuvwxyz") + \
+        list("ABCDEFGHIJKLMNOPQRSTUVWXYZ") + \
+        list("0123456789") + \
+        list("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~ ")  # include space
+
+ """
 
 num_classes = len(vocab) + 1  # +1 for CTC blank
 # Add CTC blank at index 0
 BLANK_INDEX = 0
 
 
+
 gc.collect()  # Python garbage collection
 torch.cuda.empty_cache()  # frees cached memory (not allocated memory)
+
+ 
+
 
 
 
 #---------------------------------------------------------------------------------------------------
 # encode/decode characters
+# Blank is already vocab[0], so no +1 needed
+char_to_idx = {char: idx for idx, char in enumerate(vocab)}
+idx_to_char = {idx: char for idx, char in enumerate(vocab)}
 
-# Char to index (starting from 1 because 0 is reserved for blank)
-char_to_idx = {char: idx + 1 for idx, char in enumerate(vocab)}
-
-# Index to char (inverse)
-idx_to_char = {idx + 1: char for idx, char in enumerate(vocab)}
-idx_to_char[BLANK_INDEX] = ''  # blank is mapped to empty string
-
+BLANK_INDEX = 0  # always index 0
 
 
 def decode_target(tensor, idx2char):

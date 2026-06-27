@@ -7,7 +7,7 @@ import random
 import numpy as np
 import torch.nn as nn
 import itertools
-
+import math
 import sys
 import kornia as K
 import kornia.color as KC
@@ -150,18 +150,55 @@ torch.cuda.empty_cache()  # frees cached memory (not allocated memory)
 
  
 
+import torch.nn as nn
+import torchvision.models as models
 
+def replace_bn_with_gn(module, num_groups=32):
+    """
+    Recursively replace all BatchNorm2d with GroupNorm.
+    """
+    for name, child in module.named_children():
+        if isinstance(child, nn.BatchNorm2d):
+            num_channels = child.num_features
+            gn = nn.GroupNorm(
+                num_groups=min(num_groups, num_channels), 
+                num_channels=num_channels
+            )
+            setattr(module, name, gn)
+        else:
+            replace_bn_with_gn(child, num_groups)
+    return module
+
+
+def resnet_no_bn(in_channels=1, pretrained=True, num_groups=32):
+    """
+    Build a ResNet-50 with GroupNorm instead of BatchNorm.
+    """
+    resnet = models.resnet50(pretrained=pretrained)
+
+    # patch first conv for grayscale
+    resnet.conv1 = nn.Conv2d(
+        in_channels=in_channels,
+        out_channels=64,
+        kernel_size=7,
+        stride=2,
+        padding=3,
+        bias=False
+    )
+
+    # replace all BN with GN
+    resnet = replace_bn_with_gn(resnet, num_groups=num_groups)
+
+    return resnet
 
 
 #---------------------------------------------------------------------------------------------------
 # encode/decode characters
+# Blank is already vocab[0], so no +1 needed
+char_to_idx = {char: idx for idx, char in enumerate(vocab)}
+idx_to_char = {idx: char for idx, char in enumerate(vocab)}
 
-# Char to index (starting from 1 because 0 is reserved for blank)
-char_to_idx = {char: idx + 1 for idx, char in enumerate(vocab)}
-
-# Index to char (inverse)
-idx_to_char = {idx + 1: char for idx, char in enumerate(vocab)}
-idx_to_char[BLANK_INDEX] = ''  # blank is mapped to empty string
+BLANK_INDEX = 0  # always index 0
 
 import torch
 
@@ -747,59 +784,120 @@ def collate_fn_ctc(batch, downsample_factor=32, pad_value=1.0):
     return images_tensor, labels_tensor, input_lengths_tensor, target_lengths_tensor
 
 
-
+from torchvision.transforms import ToPILImage, ToTensor
 
 
 class CRNN(nn.Module):
     def __init__(self, num_classes, img_height=64, in_channels=1, freeze_cnn=False):
         super(CRNN, self).__init__()
-        self.normalize = transforms.Normalize(mean=[0.5] * in_channels, std=[0.5] * in_channels)
+        self.normalize = transforms.Normalize(mean=[0.5] * in_channels,
+                                              std=[0.5] * in_channels)
         self.img_height = img_height
         self.in_channels = in_channels
         self.num_classes = num_classes
 
-        resnet = models.resnet50(pretrained=True)
-        resnet.conv1 = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
-
+        # --- CNN backbone (ResNet-50) ---
+        resnet = models.resnet101(pretrained=True)
+        # patch conv1 for grayscale (1 channel input)
+        """ esnet.conv1 = nn.Conv2d(
+            in_channels=1,  # grayscale
+            out_channels=64,
+            kernel_size=7,
+            stride=2,
+            padding=3,
+            bias=False
+        )
+        # replace BatchNorm with GroupNorm
+        resnet = resnet_no_bn(in_channels=1, pretrained=True, num_groups=32) """
+        resnet.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
         self.cnn = nn.Sequential(*list(resnet.children())[:-2])
-        if freeze_cnn:
+
+        """ if freeze_cnn:
             for name, param in self.cnn.named_parameters():
-                if "layer4" not in name: ## layer 4 trainiable. keep 1-3 as resnet have
-                    param.requires_grad = False
+                if "layer4" not in name:  # only layer4 trainable
+                    param.requires_grad = False """
 
+      
 
-        with torch.no_grad():
-            #dummy_input = torch.zeros(1, in_channels, 100)
-            dummy = torch.zeros(1, in_channels, img_height, 100)  # 100 = arbitrary width
+        # --- Optional width pooling layer ---
+        #self.width_pool = nn.MaxPool1d(kernel_size=2, stride=2)
 
-            dummy_output = self.cnn(dummy)
-            _, c, h, w = dummy_output.size()
-            self.sequence_length = w
-            self.feature_dim = c  # height collapsed to 1 later
-
-        self.lstm1 = nn.LSTM(self.feature_dim, 256, bidirectional=True, batch_first=True)
-        self.lstm2 = nn.LSTM(512, 256, bidirectional=True, batch_first=True)
-        self.lstm3 = nn.LSTM(512, 256, bidirectional=True, batch_first=True)
+        # --- RNN + FC ---
+        self.lstm1 = nn.LSTM(2048, 256,
+                             bidirectional=True, batch_first=True)
+        self.lstm2 = nn.LSTM(512, 256,
+                             bidirectional=True, batch_first=True)
+        self.lstm3 = nn.LSTM(512, 256,
+                             bidirectional=True, batch_first=True)
         self.fc = nn.Linear(512, num_classes)
 
-    def forward(self, x):
+    def forward(self, x, target_lengths=None):
+        if  torch.isnan(self.normalize(x)).any().item() == True:
+            print("true")
+        x = (x - 0.5) / 0.5   # normalize to [-1,1]
         # Ensure [B, C, H, W]
-        if x.ndim == 3:   # single image [C, H, W]
+        if x.ndim == 3:       # [C, H, W]
             x = x.unsqueeze(0)
-        elif x.ndim == 2:  # grayscale without channel [H, W]
+        elif x.ndim == 2:     # [H, W]
             x = x.unsqueeze(0).unsqueeze(0)
+
+        B, C, H, W = x.shape
+
+        # --- Pad each image to safe width for CTC ---
+        if target_lengths is not None:
+            padded_imgs = []
+            to_pil = ToPILImage()
+            to_tensor = ToTensor()
+            for i in range(B):
+                pil_img = to_pil(x[i])  # tensor [C,H,W] → PIL
+                pil_img = pad_to_ctc_safe_width(pil_img, target_lengths[i])
+                padded_imgs.append(to_tensor(pil_img))
+            x = torch.stack(padded_imgs).to(x.device)
+        if  torch.isnan(self.normalize(x)).any().item() == True:
+            print("true")
+
+        # --- Normalize ---
+        print(x)
+
         x = self.normalize(x)
-        x = self.cnn(x)
-        x = F.adaptive_avg_pool2d(x, (1, None))       # Collapse height to 1 → [B, C, 1, W]
-        x = x.squeeze(2).permute(0, 2, 1) # Convert to sequence format → [B, W, C]
-  
-        # Pass through BiLSTMs
+        print(x)
+
+        if  torch.isnan(self.normalize(x)).any().item() == True:
+            print("true")
+        # --- CNN feature extractor ---
+        print(x)
+        x = self.cnn(x)  # [B, C, H, W]
+        if  torch.isnan(self.normalize(x)).any().item() == True:
+            print("true")
+        # --- Adaptive pooling to keep width bounded ---
+        # Force height=1 and shrink width to <= 256
+        max_T = math.ceil(W / 16) 
+        x = F.adaptive_avg_pool2d(x, (1, max_T))  # [B, C, 1, <=256]
+        if  torch.isnan(self.normalize(x)).any().item() == True:
+            print("true")
+        # --- Convert to sequence format ---
+        x = x.squeeze(2)              # [B, C, T]
+        if  torch.isnan(self.normalize(x)).any().item() == True:
+            print("true")
+        x = x.permute(0, 2, 1)        # [B, T, C]
+        if  torch.isnan(self.normalize(x)).any().item() == True:
+            print("true")
+
+        # --- BiLSTMs ---
         x, _ = self.lstm1(x)
         x, _ = self.lstm2(x)
-        # Final prediction
-        x = self.fc(x)
+        x, _ = self.lstm3(x)
+        if  torch.isnan(self.normalize(x)).any().item() == True:
+            print("true")
+        # --- Final prediction ---
+        x = self.fc(x)                # [B, T, num_classes]
+        if  torch.isnan(self.normalize(x)).any().item() == True:
+            print("true")
 
         return x
+
+
+
 
 
 
@@ -830,22 +928,36 @@ def required_width_for_ctc(target_len, downsample=32, safety=1.1):
     return int(((2*target_len - 1) * downsample) * safety)
 
 from PIL import ImageOps
-
 def pad_to_ctc_safe_width(pil_img, target_len, downsample=32, max_width=None, pad_color=255):
+    if not isinstance(pil_img, Image.Image):
+        raise TypeError(f"Expected PIL.Image, got {type(pil_img)}")
+
+    # Ensure target_len is an integer
+    if isinstance(target_len, torch.Tensor):
+        target_len = target_len.max().item()
+
+    # Calculate required width
     need = required_width_for_ctc(target_len, downsample)
     w, h = pil_img.size
     new_w = max(w, need)
-    # round up to multiple of downsample
+
+    # Round up to multiple of downsample
     new_w = ((new_w + downsample - 1) // downsample) * downsample
+
+    # Clip to max_width if given
     if max_width is not None:
         new_w = min(new_w, max_width)
+
+    # Pad right side
     if new_w > w:
         pil_img = ImageOps.expand(pil_img, (0, 0, new_w - w, 0), fill=pad_color)
+
     return pil_img
 
 
+
 exe = False
-epocs_iterat = 10
+epocs_iterat = 3
 
 
 #preaparing similar widht dataloaders
@@ -904,7 +1016,9 @@ for file_name in listing:
         os.path.split(path.parent.absolute())[1]
         label = os.path.split(path.parent.absolute())[1]+"/"+ os.path.basename(path)
         label = label.replace(".png","")
-        dictionary.setdefault(img.size, []).append(file_name+"|"+"".join((dictonaryLabels[label])))
+        text = "".join(dictonaryLabels[label])
+        targetLen = len(text)
+        dictionary.setdefault(targetLen, []).append(file_name+"|"+text)
 
 #--------------------------------------------------
 ## process custom
@@ -938,8 +1052,11 @@ for file_name in listing:
         #label = label.replace(".png","")
         #print(label)
         
+        
         if label in dictonaryLabels:
-            dictionary.setdefault(img.size, []).append(file_name+"|"+"".join((dictonaryLabels[label])))
+            text = "".join(dictonaryLabels[label])
+            targetLen = len(text)
+            dictionary.setdefault(targetLen, []).append(file_name+"|"+text)
 
         #print(type(img.size))
         #print(f"{file_name}: {img.size}")
@@ -983,7 +1100,10 @@ for file_name in listing:
         #print(label)
         
         if label in dictonaryLabels:
-            dictionary.setdefault(img.size, []).append(file_name+"|"+"".join((dictonaryLabels[label])))
+            text = "".join(dictonaryLabels[label])
+            targetLen = len(text)
+            dictionary.setdefault(targetLen, []).append(file_name+"|"+text)
+
 
         #print(type(img.size))
         #print(f"{file_name}: {img.size}")
@@ -1043,7 +1163,6 @@ def newModel():
 
 
 # Define loss function
-criterion = nn.CTCLoss(blank=0, zero_infinity=True)
 
 
 
@@ -1150,10 +1269,13 @@ for loader_idx,loader in enumerate(dataloaders):
                 # Forward
                 #logits = model(images)              # (B, T, C)
                 #images = images.squeeze(1)  # remove extra singleton dim
-                logits = model(images.float())   # full forward in FP32 
-
+                #logits = model(images.float())   # full forward in FP32 
+                logits = model(images.float(), target_lengths=target_lengths)                
+                # Clamp to prevent NaN
+                logits = torch.clamp(logits, min=-100, max=100)
                 log_probs = F.log_softmax(logits, dim=2)
-                log_probs = log_probs.permute(1, 0, 2)  # (T, B, C) for CTC
+                log_probs = log_probs.permute(1, 0, 2)
+                
 
                 B = log_probs.size(1)
                 T = log_probs.size(0)

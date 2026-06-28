@@ -1,4 +1,6 @@
 import gc
+import cv2
+import time
 import torch
 from src.config import VOCAB
 from pynvml import nvmlInit, nvmlDeviceGetHandleByIndex, nvmlDeviceGetMemoryInfo
@@ -26,6 +28,29 @@ def wait_until_enough_gpu_memory(min_memory_available, max_retries=10, sleep_tim
 
 
 #---------------------------------------------------------------------------------------------------
+
+def resize_keep_aspect(img, target_h=64):
+    """
+    Resizes an incoming image so its height matches the network requirement (64 pixels).
+    Crucially scales the width proportionally to prevent the text from squishing or stretching.
+    """
+    # 1. Extract the current height and width from the image array dimensions
+    h, w = img.shape[:2]
+
+    # 2. Calculate the scaling multiplier (target height divided by original height)
+    # Then multiply the original width by this ratio to find the proportional new width
+    new_w = int(w * (target_h / h))
+    
+    # 3. SAFETY CHECK: If an image is extremely narrow, the math could round down to 0 width.
+    # A width of 0 will crash OpenCV's resize function instantly, so we force a minimum of 1 pixel.
+    if new_w < 1: 
+        new_w = 1
+        
+    # 4. Perform the high-quality bicubic interpolation resize operation
+    # cv2.resize expects the dimensional tuple argument formatted as (Width, Height)
+    resized = cv2.resize(img, (new_w, target_h), interpolation=cv2.INTER_CUBIC)
+    
+    return resized
 
 def clear_gpu_memory():
     gc.collect()

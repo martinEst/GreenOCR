@@ -17,6 +17,14 @@ import kornia.augmentation as KA
 import torchvision.transforms as T
 import torchvision.models as models
 
+
+from src.config import VOCAB
+from src.transforms import DualChannelLaplaceTransform
+from src.model import CRNN
+from src.utils import ctc_greedy_decoder, resize_keep_aspect
+
+
+
 #torchvision
 from torchvision import models
 from torchvision import transforms
@@ -70,173 +78,127 @@ num_classes = len(VOCAB)  # (Blank is already included inside VOCAB)
 gc.collect()  # Python garbage collection
 torch.cuda.empty_cache()  # frees cached memory (not allocated memory)
 
-#character mapping
+
+
+# Import your clean modular building blocks
+from src.config import VOCAB
+from src.transforms import DualChannelLaplaceTransform
+from src.model import CRNN
+from src.utils import ctc_greedy_decoder, resize_keep_aspect, clear_gpu_memory
+
+# 1. Parse your configuration file paths
+myvars = {}
+with open("ref.cnf", "r", encoding="utf-8") as myfile:
+    for line in myfile:
+        if "=" in line:
+            name, var = line.strip().split("=", 1)
+            myvars[name.strip()] = var.strip()
+
+# 2. Map standard global indices
 char_to_idx = {char: idx for idx, char in enumerate(VOCAB)}
 idx_to_char = {idx: char for idx, char in enumerate(VOCAB)}
+num_classes = len(VOCAB)
 
+# 3. Instantiate your core model framework shell once
+# (Using the identical class definition that training utilizes)
+model_shell = CRNN(num_classes=num_classes, img_height=64, in_channels=1, freeze_cnn=True)
+model_shell = model_shell.to("cuda")
 
-
-
-def encode_text(text):
-    """Converts a raw string into a list of integer indices using the global map."""
-    return [char_to_idx[c] for c in text if c in char_to_idx]
-
-def decode_target(tensor, idx2char=idx_to_char):
-    """Converts a PyTorch tensor of indices back into a readable string."""
-    return ''.join([idx2char.get(int(i), '?') for i in tensor])
-
-
-
-
-
-##--------------------------------------------------------
-## attempt to keep execution on going, if limited memory. 
-##--------------------------------------------------------
-
-
-
-
-
-def resize_keep_aspect(img, target_h=64):
-    """
-    Resizes an incoming image so its height matches the network requirement (64 pixels).
-    Crucially scales the width proportionally to prevent the text from squishing or stretching.
-    """
-    # 1. Extract the current height and width from the image array dimensions
-    h, w = img.shape[:2]
-
-    # 2. Calculate the scaling multiplier (target height divided by original height)
-    # Then multiply the original width by this ratio to find the proportional new width
-    new_w = int(w * (target_h / h))
+# 4. Initialize the heavy Real-ESRGAN upsampler ONCE outside the loop
+# This completely stops your home GPU VRAM from leaking and crashing!
+try:
+    # Ensure external dependencies are accessible locally
+    from basicsr.archs.rrdbnet_arch import RRDBNet
+    from realesrgan import RealESRGANer
     
-    # 3. SAFETY CHECK: If an image is extremely narrow, the math could round down to 0 width.
-    # A width of 0 will crash OpenCV's resize function instantly, so we force a minimum of 1 pixel.
-    if new_w < 1: 
-        new_w = 1
+    esrgan_network = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
+    upsampler = RealESRGANer(
+        scale=4,
+        model_path='/home/martinez/d/weights/RealESRGAN_x4plus.pth', 
+        model=esrgan_network,
+        tile=0,  
+        tile_pad=10,
+        pre_pad=0,
+        half=False  # Switch to True if your GPU supports half-precision FP16
+    )
+    use_upscaler = True
+    print("Real-ESRGAN Super-Resolution engine successfully loaded.")
+except ImportError:
+    use_upscaler = False
+    print("Warning: Real-ESRGAN libraries missing. Proceeding with standard interpolation scaling.")
+
+# 5. Initialize evaluation transform rules
+inference_transform = DualChannelLaplaceTransform(train=False)
+
+# -------------------------------------------------------------------------
+# Execution Cycle
+# -------------------------------------------------------------------------
+# Find all trained checkpoint paths saved inside your models directory
+checkpoint_files = sorted(glob.glob("models/*.pth"))
+test_image_paths = glob.glob(os.path.join(myvars['imgTest'], "*.png"))
+
+for checkpoint_path in checkpoint_files:
+    print(f"\n--- Evaluating Model Checkpoint: {checkpoint_path} ---")
+    
+    # SAFE WEIGHT LOADING: Load weights safely directly into the active shell
+    try:
+        # If your old checkpoints saved the entire model object, we use this fallback
+        checkpoint_data = torch.load(checkpoint_path, map_location="cuda")
+        if isinstance(checkpoint_data, dict):
+            # Normal weights state dict
+            model_shell.load_state_dict(checkpoint_data)
+        else:
+            # Legacy object fallback
+            model_shell.load_state_dict(checkpoint_data.state_dict())
+    except Exception as error:
+        print(f"Skipping model {checkpoint_path} due to directory path mismatch structure: {error}")
+        continue
         
-    # 4. Perform the high-quality bicubic interpolation resize operation
-    # cv2.resize expects the dimensional tuple argument formatted as (Width, Height)
-    resized = cv2.resize(img, (new_w, target_h), interpolation=cv2.INTER_CUBIC)
+    model_shell.eval() # Set model to validation evaluation mode
     
-    return resized
+    # CRITICAL PERFORMANCE FIX: Freeze gradient calculations entirely during inference!
+    with torch.no_grad():
+        for file in test_image_paths:
+            print(f"Processing Image: {file}")
 
-#---------------------------------------------------------------------------------------------------
-
-import torchvision.transforms as T
-from PIL import Image
-
-# Assuming Kornia imports are set up like this in your script:
-import kornia.color as KC
-import kornia.filters as KF
-
-from src.transforms import DualChannelLaplaceTransform
-train_transform = DualChannelLaplaceTransform(train=True)
-
-#---------------------------------------------------------------------------------------------------
-
-
-
-#init
-model = CRNN(num_classes=num_classes,img_height=64,in_channels=1,freeze_cnn=True)
-
-
-myvars = {}
-with open("ref.cnf") as myfile:
-    for line in myfile:
-        name, var = line[:-1].strip().partition("=")[::2]
-        myvars[name.strip()] = var.strip()
-
-
-exe = True
-
-#pathModel = myvars['model_interface']
-
-
-    
-if(exe):
-
-    
-    transform = DualChannelLaplaceTransform(train=False)
-
-   # optimizer = torch.optim.Adam(model.parameters())  # Now includes RNN and FC
-    """     dataloader = DataLoader(
-        val_dataset,
-        batch_size=16,
-        shuffle=True,
-        collate_fn=ctc_collate_fn) """
-    
-   
-    for singleModel in glob.glob( "models/*.pth"):
-        print("model",singleModel)                
-        """      regexp = re.compile(r'.*_[5-90-9]_.*')
-                if regexp.search(singleModel):
-                    print('matched')
-            """
-   
-        model = torch.load(singleModel, map_location="cuda")
-        state_dict = model.state_dict()
-        #state = model.load_state_dict(torch.load(singleModel))  # or your path
-        model = model.to("cuda")
-        print("state keys:")
-
-        
-        for file in glob.glob( myvars['imgTest']+"/*.png"):
-
-            print("IMG",file)
-            #enchance input image ,using RealESRGANer outscale it 8, image will be rebuilt with some of the realesrg magic 
-            # and then downsample it to height 64 , need for our ocr model
-
-            # Step 1: Load image (OpenCV loads in BGR format)
+            # Step 1: Load Raw input asset (OpenCV reads in native BGR format)
             img = cv2.imread(file, cv2.IMREAD_COLOR)
+            if img is None:
+                continue
 
-            # Step 2: Create the model
-            mod = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
+            # Step 2: Super-resolve image via the global instance
+            if use_upscaler:
+                output, _ = upsampler.enhance(img, outscale=1)
+            else:
+                output = img.copy()
 
-            # Step 3: Create the RealESRGANer instance
-            upsampler = RealESRGANer(
-                scale=4,
-                model_path='/home/martinez/d/weights/RealESRGAN_x4plus.pth', 
-                model=mod,
-                tile=0,  # Set to >0 for tiled inference on large images
-                tile_pad=10,
-                pre_pad=0,
-                half=False  # Set True if using half-precision and CUDA
-            )
+            # Step 3: Resize height proportionally down to 64 pixels 
+            output_proportional = resize_keep_aspect(output, target_h=64)
 
-            # Step 4: Super-resolve
-            output, _ = upsampler.enhance(img, outscale=1)
-            print("Original shape:", img.shape)
-            print("Upscaled shape:", output.shape) 
+            # Step 4: Convert 3-channel colour space down to clean Grayscale
+            gray = cv2.cvtColor(output_proportional, cv2.COLOR_BGR2GRAY)
 
-            #target_w, target_h = 32, 64
-            #downscaled = cv2.resize(output, (target_w, target_h), interpolation=cv2.INTER_AREA)
-            output_proportional = resize_keep_aspect(output, target_h=64)  #return 3 channel RGB
-
-            #?? can we increase training data from height 64 to 98 ? 
-
-            gray = cv2.cvtColor(output_proportional, cv2.COLOR_BGR2GRAY)  # or COLOR_RGB2GRAY depending on your color format
-
-            tensor = torch.from_numpy(gray).float() / 255.0  # [H, W]
-            tensor = tensor.unsqueeze(0).unsqueeze(0)        # [B=1, C=1, H, W]
-           
-
-            img_tensor = transform(tensor).unsqueeze(0).cuda() 
-            preds = None
-            #with torch.no_grad():
+            # Step 5: Convert grayscale array to a normalized float array [0, 1]
+            # Feed raw normalized array directly to your clean Kornia transform block
+            img_tensor = inference_transform(gray, device="cuda") # Output shape: [1, 64, Width]
             
-            output = model(img_tensor)  # Output: (T, B, num_classes)
-            log_probs = torch.nn.functional.log_softmax(output, dim=2)
-            #  preds = ctc_greedy_decoder(log_probs)
-            # Return single prediction
-            preds = log_probs.argmax(dim=2)
-            print(preds)
-            decoded_indices = ctc_greedy_decoder(preds[0])
-            print(decoded_indices)
-        
-            ocrTxt = "".join(idx_to_char[i] for i in decoded_indices)
-            print(ocrTxt)
+            # Add back the singular global batch dimension required by the CRNN model layer
+            img_tensor = img_tensor.unsqueeze(0) # Ultimate shape matching model: [1, 1, 64, Width]
+
+            # Step 6: Generate OCR Sequence Predictions
+            predictions = model_shell(img_tensor) # Output matrix shape: [1, OutputSequenceLength, NumClasses]
             
-            joined_text = ''.join(ocrTxt)
-            cleaned_text = ' '.join(joined_text.split())
-            print(cleaned_text)
-    
+            # Step 7: Collapse matrix selections via argmax along the class axis
+            preds_indices = predictions.argmax(dim=2) # Shape: [1, OutputSequenceLength]
+            
+            # Step 8: Parse character positions using our safe greedy decoder logic
+            decoded_indices = ctc_greedy_decoder(preds_indices[0])
+            
+            # Step 9: Reconstruct string data from map dictionary indices
+            ocr_text = "".join(idx_to_char.get(idx, '?') for idx in decoded_indices)
+            
+            # Step 10: Clean trailing layouts or sentence spaces
+            cleaned_text = " ".join(ocr_text.split())
+            print(f"Resulting Text Output: {cleaned_text}")
+            
+    clear_gpu_memory() # Clean your VRAM cache right after running predictions for the model

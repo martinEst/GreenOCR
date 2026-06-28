@@ -1,437 +1,138 @@
 import os
 import gc
-import re
+import cv2
+
+import random
 
 import time
 import torch
-import string
 import glob
-import random
 import numpy as np
 import torch.nn as nn
-
-
-
-from torchvision import models
-
-
-import kornia as K
 import kornia.color as KC
-import kornia.enhance as KE
 import kornia.filters as KF
-import albumentations as A
-import kornia.geometry as KG
 import torch.nn.functional as F
-
 import kornia.augmentation as K
 import kornia.augmentation as KA
 import torchvision.transforms as T
-from PIL import Image, ImageFilter
-from albumentations.pytorch import ToTensorV2
-from kornia.augmentation import AugmentationSequential
-
 import torchvision.models as models
-import kornia.geometry.transform as KG
-import torchvision.transforms.functional as TF
 
-from PIL import Image
-from torch.utils.data import Dataset
-from torch.utils.data import DataLoader
+#torchvision
+from torchvision import models
 from torchvision import transforms
-from torch.nn.utils import clip_grad_norm_
-import torch.optim as optim
-from torchvision.transforms import functional as TF
-from torch.nn.utils.rnn import pad_sequence
-from torch.cuda.amp import GradScaler, autocast
 
-from torchvision.models import resnet50, ResNet50_Weights
-from pynvml import nvmlInit, nvmlDeviceGetHandleByIndex, nvmlDeviceGetMemoryInfo
+#torch
+
+from torch.utils.data import Dataset
 
 
-import kornia.color as KC
+#PIL
+from PIL import Image, ImageOps
 
+#albumentations
+
+#kornia
+
+
+#pynvml
+
+#basicsr
 from basicsr.archs.rrdbnet_arch import RRDBNet
 
+#realesrgan
 from realesrgan import RealESRGANer
 
-
-import cv2
-
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-os.environ["CUDA_LAUNCH_BLOCKING"] = "0"
-
-torch.backends.cudnn.deterministic = True
-torch.backends.cudnn.benchmark = False
-torch.autograd.set_detect_anomaly(True)
-torch.backends.cudnn.deterministic = True
-torch.backends.cudnn.benchmark = False
-import unicodedata
+#local src
+from src.config import VOCAB
 
 
 # any input image or training image width can vary but height is fixed
-IMG_HEIGHT = 64
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
+# Hardware & Memory Settings
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+os.environ["CUDA_LAUNCH_BLOCKING"] = "0"
 
-vocab = ['<blank>'] + list("ÈĒĖēėěęĚĘëéèÉÊËðÐŊŋ") + list("£§êàâé£§⊥")+['£','ſ','—','“','„','’','ô','é']+ list(string.ascii_letters + string.digits + string.punctuation + " ") + ['ä', 'ö', 'ü', 'Ä', 'Ö', 'Ü', 'ß', 'å', 'Å', 'æ', 'Æ', 'ø', 'Ø']
-""" 
-vocab = ['<blank>'] +  punctuation_chars + list("abcdefghijklmnopqrstuvwxyz") + \
-        list("ABCDEFGHIJKLMNOPQRSTUVWXYZ") + \
-        list("0123456789") + \
-        list("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~ ")  # include space
+# this is for my super weak GPU optimization
+torch.backends.cudnn.deterministic = False
+torch.backends.cudnn.benchmark = True       # important for varying image widths!
+torch.autograd.set_detect_anomaly(False)    # True when debugging NaNs
 
- """
-
-num_classes = len(vocab) + 1  # +1 for CTC blank
-# Add CTC blank at index 0
-BLANK_INDEX = 0
+#we only fixing height, not widht
+IMG_HEIGHT = 64
+BLANK_INDEX = 0  # Explicitly mapped to index 0
+num_classes = len(VOCAB)  # (Blank is already included inside VOCAB)
 
 
-
+# Cleaning up VRAM before loading the model
 gc.collect()  # Python garbage collection
 torch.cuda.empty_cache()  # frees cached memory (not allocated memory)
 
- 
+#character mapping
+char_to_idx = {char: idx for idx, char in enumerate(VOCAB)}
+idx_to_char = {idx: char for idx, char in enumerate(VOCAB)}
 
-
-
-
-#---------------------------------------------------------------------------------------------------
-# encode/decode characters
-# Blank is already vocab[0], so no +1 needed
-char_to_idx = {char: idx for idx, char in enumerate(vocab)}
-idx_to_char = {idx: char for idx, char in enumerate(vocab)}
-
-BLANK_INDEX = 0  # always index 0
-
-
-def decode_target(tensor, idx2char):
-    return ''.join([idx2char.get(int(i), '?') for i in tensor])
 
 
 
 def encode_text(text):
+    """Converts a raw string into a list of integer indices using the global map."""
     return [char_to_idx[c] for c in text if c in char_to_idx]
 
+def decode_target(tensor, idx2char=idx_to_char):
+    """Converts a PyTorch tensor of indices back into a readable string."""
+    return ''.join([idx2char.get(int(i), '?') for i in tensor])
 
-def encode_text(text, char_to_idx):
-    """Convert string to list of integer indices (no blank)"""
-    return [char_to_idx[c] for c in text if c in char_to_idx]
+
 
 
 
 ##--------------------------------------------------------
 ## attempt to keep execution on going, if limited memory. 
 ##--------------------------------------------------------
-def clear_gpu_memory():
-        torch.cuda.empty_cache()
-        gc.collect()
-        
-
-def wait_until_enough_gpu_memory(min_memory_available, max_retries=10, sleep_time=5):
-    nvmlInit()
-    handle = nvmlDeviceGetHandleByIndex(torch.cuda.current_device())
-
-    for _ in range(max_retries):
-        info = nvmlDeviceGetMemoryInfo(handle)
-        if info.free >= min_memory_available:
-            break
-        print(f"Waiting for {min_memory_available} bytes of free GPU memory. Retrying in {sleep_time} seconds...")
-        time.sleep(sleep_time)
-    else:
-        raise RuntimeError(f"Failed to acquire {min_memory_available} bytes of free GPU memory after {max_retries} retries.")
 
 
-#---------------------------------------------------------------------------------------------------
-from PIL import Image, ImageOps
-import os
-
-def pad_to_required_width(img, target_length, downsample_factor=32, pad_color=255):
-    min_width = target_length * downsample_factor
-    w, h = img.size
-    if w < min_width:
-        pad_width = min_width - w
-        # Pad right only
-        padding = (0, 0, pad_width, 0)
-        img = ImageOps.expand(img, padding, fill=pad_color)
-    return img
-
-# Example usage
-#img = Image.open("sample.png").convert("L")
-#text = "some label here"
-#padded_img = pad_to_required_width(img, target_length=len(text))
-#padded_img.save("sample_padded.png")
-
-##--------------------------------------------------------
-## ctc 
-##--------------------------------------------------------
-
-def collate_fn(batch):
-    images, texts, widths = zip(*batch)
-    max_w = max(widths)
-    
-    padded_imgs = []
-    for img in images:
-        pad_w = max_w - img.shape[2]
-        padded = torch.nn.functional.pad(img, (0, pad_w, 0, 0), value=1.0)  # pad right with white
-        padded_imgs.append(padded)
-    target_lengths = torch.tensor([len(label) for label in texts], dtype=torch.long)
-    targets = torch.cat(texts)
-    input_lengths = torch.tensor([img.shape[-1] for img in images], dtype=torch.long)
-
-    return torch.stack(padded_imgs),targets, input_lengths,target_lengths
-
-#    return padded_images_tensor, targets, input_lengths, target_lengths """
 
 
-def ctc_loss(y_pred, labels, input_lengths, label_lengths):
-    """
-    Compute CTC loss with validation.
-    
-    Args:
-        y_pred (torch.Tensor): Model output of shape (batch, seq_len, num_classes).
-        labels (torch.Tensor): Target sequences of shape (batch, max_label_len).
-        input_lengths (torch.Tensor): Length of each input sequence.
-        label_lengths (torch.Tensor): Length of each target sequence.
-    
-    Returns:
-        torch.Tensor: CTC loss.
-    """
-    # Validate lengths
-    max_input_length = y_pred.size(1)  # seq_len = W/16
-    if (label_lengths > input_lengths).any() or (label_lengths > max_input_length).any():
-        raise ValueError(f"label_lengths ({label_lengths}) must be <= input_lengths ({input_lengths}) "
-                        f"and <= output seq_len ({max_input_length})")
-    
-    y_pred = y_pred.log_softmax(2)  # Apply log_softmax
-    return torch.nn.functional.ctc_loss(
-        y_pred.transpose(0, 1),  # (seq_len, batch, num_classes)
-        labels,
-        input_lengths,
-        label_lengths,
-        blank=0,  # Assume blank is index 0
-        reduction='mean'
-    )
 
 def resize_keep_aspect(img, target_h=64):
-   
+    """
+    Resizes an incoming image so its height matches the network requirement (64 pixels).
+    Crucially scales the width proportionally to prevent the text from squishing or stretching.
+    """
+    # 1. Extract the current height and width from the image array dimensions
     h, w = img.shape[:2]
 
-    # Compute new width maintaining aspect ratio
+    # 2. Calculate the scaling multiplier (target height divided by original height)
+    # Then multiply the original width by this ratio to find the proportional new width
     new_w = int(w * (target_h / h))
+    
+    # 3. SAFETY CHECK: If an image is extremely narrow, the math could round down to 0 width.
+    # A width of 0 will crash OpenCV's resize function instantly, so we force a minimum of 1 pixel.
+    if new_w < 1: 
+        new_w = 1
+        
+    # 4. Perform the high-quality bicubic interpolation resize operation
+    # cv2.resize expects the dimensional tuple argument formatted as (Width, Height)
     resized = cv2.resize(img, (new_w, target_h), interpolation=cv2.INTER_CUBIC)
-
+    
     return resized
 
 #---------------------------------------------------------------------------------------------------
-#
-##--------------------------------------------------------
-## classes 
-##--------------------------------------------------------
-import math
-import random
-from torch.utils.data import Sampler
 
-class DualChannelLaplaceTransform:
-    def __init__(self, target_height=64, max_width=None, 
-                 train=True, output_channels=1,  # <-- NEW FLAG
-                 sharpen_strength=1.5, contrast_clip=(0.01, 0.99)):
-        """
-        output_channels: 1 (single channel) or 2 (sharpened + laplace)
-        """
-        self.target_height = target_height
-        self.max_width = max_width
-        self.train = train
-        self.output_channels = output_channels
-        self.sharpen_strength = sharpen_strength
-        self.contrast_clip = contrast_clip
-        self.to_tensor = T.ToTensor()
+import torchvision.transforms as T
+from PIL import Image
 
-        # Augmentations only used during training
-        self.augment = torch.nn.Sequential(
-            KA.RandomAffine(degrees=2.5, translate=(0.02, 0.02), p=0.5),
-            KA.RandomBrightness(0.1, p=0.5),
-            KA.RandomContrast(0.1, p=0.5),
-            KA.RandomGaussianNoise(mean=0.0, std=0.01, p=0.2),
-        )
+# Assuming Kornia imports are set up like this in your script:
+import kornia.color as KC
+import kornia.filters as KF
 
-    def _contrast_stretch(self, img, low=0.01, high=0.99):
-        if img.dim() == 4:
-            return torch.stack([self._contrast_stretch(single_img, low, high) for single_img in img])
-        stretched = torch.empty_like(img)
-        for c in range(img.shape[0]):
-            flat = img[c].flatten()
-            low_val = flat.kthvalue(int(flat.numel() * low)).values
-            high_val = flat.kthvalue(int(flat.numel() * high)).values
-            stretched[c] = torch.clamp((img[c] - low_val) / (high_val - low_val + 1e-6), 0, 1)
-        return stretched
-
-    def __call__(self, img):
-        
-       
-
-        # Step 1: Convert to tensor
-        if isinstance(img, Image.Image):
-            tensor = self.to_tensor(img).unsqueeze(0)  # [1,C,H,W]
-        elif isinstance(img, np.ndarray):
-           tensor = torch.from_numpy(img).float().unsqueeze(0)
-        elif isinstance(img, torch.Tensor):
-            if img.ndim == 3:
-                tensor = img.unsqueeze(0)
-            else:
-                tensor = img
-        else:
-            raise TypeError(f"Unsupported image type: {type(img)}")
-
-        # Step 2: Grayscale
-        if tensor.shape[1] == 3:
-            gray = KC.rgb_to_grayscale(tensor)
-        else:
-            gray = tensor
-
-        # avoid resizing - stretching or proportsional 
-        # Step 3: Proportional resize 
-        #gray = self._resize_proportional(gray)
-
-        # Step 4: Augmentation (if training)
-        if self.train:
-            gray = self.augment(gray)
-
-        # Step 5: Contrast stretch
-        gray = self._contrast_stretch(gray, *self.contrast_clip)
-
-        # Step 6: Sharpen
-        blurred = KF.gaussian_blur2d(gray, (3, 3), (1.0, 1.0))
-        sharpened = torch.clamp(gray + self.sharpen_strength * (gray - blurred), 0.0, 1.0)
-
-        return sharpened.squeeze(0)  # [1,H,W] -> remove batch dim for dataset __getitem__
-                
-
-
-class OCRDataset(Dataset):
-    def __init__(self, label_file, image_dir, transform=None, dataSrc = None):
-        """
-        Args:
-            label_file (str): Path to label file in format 'image_name|text'
-            image_dir (str): Directory with images
-            char_to_idx (dict): Mapping from characters to indices
-            transform (callable, optional): Transform applied to the image
-        """
-        self.image_dir = image_dir
-        self.transform = transform
-        self.samples = []
-        #format is folder name, filename , text 
-        if dataSrc == "En" :
-            with open(label_file, 'r', encoding='utf-8') as f:
-                for line in f:
-                    try:
-                        folder_image_name, text = line.strip().split(" ",1)
-                        folder, image_name =  folder_image_name.strip().split(",")
-
-                        self.samples.append((folder+"/"+image_name+".png", text))
-                    except:
-                        print(line)
-        else:   ##old way
-            with open(label_file, 'r', encoding='utf-8') as f:
-                for line in f:
-                    try:
-                        image_name, text = line.strip().split("|")
-                        self.samples.append((image_name, text))
-                    except:
-                        print(line)
-
-                    
-
-    def __len__(self):
-        return len(self.samples)
-
-    def __getitem__(self, idx):
-        img_name, text = self.samples[idx]
-        img_path = os.path.join(self.image_dir, img_name)
-
-        # Load grayscale image
-        img_pil = Image.open(img_path).convert("L")
-        img_pil = pad_to_required_width(img_pil, target_length=len(text))
-        w, h = img_pil.size
-        # Convert to tensor [1, H, W]
-        img_np = np.array(img_pil, dtype=np.float32)
-        img_tensor = torch.from_numpy(img_np).unsqueeze(0)  # [1, H, W]
-        
-        # Apply transform if provided
-        if self.transform:
-            img_tensor = self.transform(img_tensor)
-
-        # Encode label
-        label_tensor = torch.tensor(
-            [char_to_idx[c] for c in text],
-            dtype=torch.long
-        )
-        
-        return img_tensor, label_tensor, w
-
-
-
-
-class CRNN(nn.Module):
-    def __init__(self, num_classes, img_height=64, in_channels=1, freeze_cnn=False):
-        super(CRNN, self).__init__()
-        self.normalize = transforms.Normalize(mean=[0.5] * in_channels, std=[0.5] * in_channels)
-        self.img_height = img_height
-        self.in_channels = in_channels
-        self.num_classes = num_classes
-
-        resnet = models.resnet50(pretrained=True)
-        resnet.conv1 = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
-
-        self.cnn = nn.Sequential(*list(resnet.children())[:-2])
-        if freeze_cnn:
-            for name, param in self.cnn.named_parameters():
-                if "layer4" not in name: ## layer 4 trainiable. keep 1-3 as resnet have
-                    param.requires_grad = False
-
-
-        with torch.no_grad():
-            #dummy_input = torch.zeros(1, in_channels, 100)
-            dummy = torch.zeros(1, in_channels, img_height, 100)  # 100 = arbitrary width
-
-            dummy_output = self.cnn(dummy)
-            _, c, h, w = dummy_output.size()
-            self.sequence_length = w
-            self.feature_dim = c  # height collapsed to 1 later
-
-        self.lstm1 = nn.LSTM(self.feature_dim, 256, bidirectional=True, batch_first=True)
-        self.lstm2 = nn.LSTM(512, 256, bidirectional=True, batch_first=True)
-        self.lstm3 = nn.LSTM(512, 256, bidirectional=True, batch_first=True)
-        self.fc = nn.Linear(512, num_classes)
-
-    def forward(self, x):
-        x = self.normalize(x)
-        x = self.cnn(x)
-        x = F.adaptive_avg_pool2d(x, (1, None))       # Collapse height to 1 → [B, C, 1, W]
-        x = x.squeeze(2).permute(0, 2, 1) # Convert to sequence format → [B, W, C]
-  
-        # Pass through BiLSTMs
-        x, _ = self.lstm1(x)
-        x, _ = self.lstm2(x)
-        # Final prediction
-        x = self.fc(x)
-
-        return x
-
+from src.transforms import DualChannelLaplaceTransform
+train_transform = DualChannelLaplaceTransform(train=True)
 
 #---------------------------------------------------------------------------------------------------
-
-## training / execution of model 
-def ctc_greedy_decoder(preds, blank=0):
-    decoded = []
-    prev = blank
-    for p in preds:
-        if p != prev and p != blank:
-            decoded.append(p.item())
-        prev = p
-    return decoded
 
 
 

@@ -22,5 +22,6 @@ https://github.com/xinntao/Real-ESRGAN.git
 
 
 
-
+─ train.py               # Main training script
+─ exe_t.py               # Main execution script
 

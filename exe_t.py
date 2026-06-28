@@ -1,48 +1,19 @@
 import os
 import gc
 import cv2
-
-import random
-
-import time
 import torch
 import glob
-import numpy as np
-import torch.nn as nn
-import kornia.color as KC
-import kornia.filters as KF
-import torch.nn.functional as F
-import kornia.augmentation as K
-import kornia.augmentation as KA
-import torchvision.transforms as T
-import torchvision.models as models
 
 
 from src.config import VOCAB
 from src.transforms import DualChannelLaplaceTransform
 from src.model import CRNN
 from src.utils import ctc_greedy_decoder, resize_keep_aspect
-
-
-
-#torchvision
-from torchvision import models
-from torchvision import transforms
-
-#torch
-
-from torch.utils.data import Dataset
-
-
-#PIL
-from PIL import Image, ImageOps
-
-#albumentations
-
-#kornia
-
-
-#pynvml
+# Import your clean modular building blocks
+from src.config import VOCAB
+from src.transforms import DualChannelLaplaceTransform
+from src.model import CRNN
+from src.utils import ctc_greedy_decoder, resize_keep_aspect, clear_gpu_memory
 
 #basicsr
 from basicsr.archs.rrdbnet_arch import RRDBNet
@@ -54,9 +25,7 @@ from realesrgan import RealESRGANer
 from src.config import VOCAB
 
 
-# any input image or training image width can vary but height is fixed
 
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 # Hardware & Memory Settings
@@ -68,10 +37,6 @@ torch.backends.cudnn.deterministic = False
 torch.backends.cudnn.benchmark = True       # important for varying image widths!
 torch.autograd.set_detect_anomaly(False)    # True when debugging NaNs
 
-#we only fixing height, not widht
-IMG_HEIGHT = 64
-BLANK_INDEX = 0  # Explicitly mapped to index 0
-num_classes = len(VOCAB)  # (Blank is already included inside VOCAB)
 
 
 # Cleaning up VRAM before loading the model
@@ -80,11 +45,7 @@ torch.cuda.empty_cache()  # frees cached memory (not allocated memory)
 
 
 
-# Import your clean modular building blocks
-from src.config import VOCAB
-from src.transforms import DualChannelLaplaceTransform
-from src.model import CRNN
-from src.utils import ctc_greedy_decoder, resize_keep_aspect, clear_gpu_memory
+
 
 # 1. Parse your configuration file paths
 myvars = {}

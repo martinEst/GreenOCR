@@ -105,3 +105,18 @@ def calculate_ctc_loss(y_pred, labels, input_lengths, label_lengths):
         # This keeps your home GPU training loop moving forward safely without crashing mid-run!
         zero_infinity=True 
     )
+
+
+def ctc_greedy_decoder_batch(preds, idx_to_char, blank=0):
+
+    pred_texts = []
+    for seq in preds:               # loop over batch
+        decoded = []
+        prev = blank
+        for p in seq:               # loop over timesteps
+            p = p.item() if hasattr(p, "item") else int(p)
+            if p != prev and p != blank:
+                decoded.append(idx_to_char.get(p, ''))
+            prev = p
+        pred_texts.append("".join(decoded))
+    return pred_texts

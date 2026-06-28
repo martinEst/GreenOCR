@@ -1,10 +1,27 @@
 import torch
+import copy
+
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.models as models
 import torchvision.transforms as transforms
 IMG_HEIGHT = 64
-
+def replace_bn_with_gn(module, num_groups=32):
+    """
+    Recursively replaces all BatchNorm2d layers with GroupNorm.
+    Essential for stabilizing training on low batch sizes on home GPUs.
+    """
+    for name, child in module.named_children():
+        if isinstance(child, nn.BatchNorm2d):
+            num_channels = child.num_features
+            gn = nn.GroupNorm(
+                num_groups=min(num_groups, num_channels), 
+                num_channels=num_channels
+            )
+            setattr(module, name, gn)
+        else:
+            replace_bn_with_gn(child, num_groups)
+    return module
 class CRNN(nn.Module):
     def __init__(self, num_classes, img_height=IMG_HEIGHT, in_channels=1, freeze_cnn=False):
         super(CRNN, self).__init__()
@@ -42,3 +59,42 @@ class CRNN(nn.Module):
         x, _ = self.lstm2(x)
         x = self.fc(x)
         return x
+# Your model weight-averaging trick lives safely inside the model tools now
+def merge_best_task_layers(global_model, best_dicts, alphas=None, merge_cnn5=False):
+    """
+    Blends recurrent and linear head weights from separate dataset training runs.
+    """
+    if alphas is None:
+        alphas = [1.0 / len(best_dicts)] * len(best_dicts)
+
+    with torch.no_grad():  
+        for name, param in global_model.named_parameters():
+            if ("lstm" in name) or ("fc" in name) or (merge_cnn5 and "cnn.5" in name):
+                merged = sum(alpha * bd[name] for alpha, bd in zip(alphas, best_dicts))
+                param.copy_(merged)   
+    return global_model
+
+def merge_best_states(global_model, best_dicts, alphas=None):
+    """
+    global_model: the model to load merged weights into
+    best_dicts: list of state_dicts from different dataloaders [dict1, dict2, ...]
+    alphas: list of weights for each state_dict (must sum to 1)
+    """
+    if alphas is None:
+        alphas = [1.0 / len(best_dicts)] * len(best_dicts)  # equal weighting
+
+    # start from global_model state_dict
+    merged_state = copy.deepcopy(global_model.state_dict())
+
+    # merge each parameter
+    for key in merged_state.keys():
+        merged_state[key] = sum(alpha * bd[key] for alpha, bd in zip(alphas, best_dicts))
+
+    # load merged weights into global_model
+    global_model.load_state_dict(merged_state)
+    return global_model
+
+
+
+
+

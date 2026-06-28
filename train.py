@@ -88,6 +88,8 @@ from albumentations.pytorch import ToTensorV2
 from kornia.augmentation import AugmentationSequential
 import torchvision.models as models
 
+import torch.nn as nn
+import torchvision.models as models
 import torchvision.transforms as T
 import kornia.augmentation as KA
 import kornia.color as KC
@@ -96,6 +98,7 @@ import kornia.filters as KF
 from PIL import Image
 import numpy as np
 from basicsr.archs.rrdbnet_arch import RRDBNet
+import unicodedata
 
 from realesrgan import RealESRGANer
 from PIL import Image
@@ -103,45 +106,36 @@ import torch
 import os
 import cv2
 
+import os
+import sys
+import random
+import torch
+import torch.optim as optim
+from torch.utils.data import DataLoader, Sampler
+
+# Root level imports pulling from your beautiful clean source files
+from src.config import VOCAB
+from src.transforms import DualChannelLaplaceTransform
+from src.dataset import OCRDataset, collate_fn
+from src.model import CRNN, merge_best_task_layers # Your model & merging trick!
+from src.utils import calculate_ctc_loss, ctc_greedy_decoder_batch, clear_gpu_memory
+
+# 1. Global Hardware & VRAM Memory Configurations
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+os.environ["CUDA_LAUNCH_BLOCKING"] = "0"
 
-torch.backends.cudnn.deterministic = True
-torch.backends.cudnn.benchmark = False
-torch.autograd.set_detect_anomaly(True)
-torch.backends.cudnn.deterministic = True
-torch.backends.cudnn.benchmark = False
+# 2. Performance Optimization Flags
+torch.backends.cudnn.deterministic = False
+torch.backends.cudnn.benchmark = True       
+torch.autograd.set_detect_anomaly(False)    
 
-import unicodedata
-
-
-# any input image or training image width can vary but height is fixed
-IMG_HEIGHT = 64
-
+# 3. Universal Dictionaries & Core Setup Variables
+char_to_idx = {char: idx for idx, char in enumerate(VOCAB)}
+idx_to_char = {idx: char for idx, char in enumerate(VOCAB)}
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+num_classes = len(VOCAB)
 
-## training data has some of germanic scripts and they contain more characters than classical english
-
-punctuation_chars = [chr(i) for i in range(sys.maxunicode)
-                     if unicodedata.category(chr(i)).startswith("P")]
-
-#some special characters that appeared in germanic manuscripts, maybe should be avoided now
-ctc_loss_fn = torch.nn.CTCLoss(blank=0, reduction='mean', zero_infinity=True)
-
-
-
-vocab = ['<blank>'] + list("ÈĒĖēėěęĚĘëéèÉÊËðÐŊŋ") + list("£§êàâé£§⊥")+['£','ſ','—','“','„','’','ô','é']+ list(string.ascii_letters + string.digits + string.punctuation + " ") + ['ä', 'ö', 'ü', 'Ä', 'Ö', 'Ü', 'ß', 'å', 'Å', 'æ', 'Æ', 'ø', 'Ø']
-""" 
-vocab = ['<blank>'] +  punctuation_chars + list("abcdefghijklmnopqrstuvwxyz") + \
-        list("ABCDEFGHIJKLMNOPQRSTUVWXYZ") + \
-        list("0123456789") + \
-        list("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~ ")  # include space
-
- """
-
-num_classes = len(vocab) + 1  # +1 for CTC blank
-# Add CTC blank at index 0
-BLANK_INDEX = 0
+clear_gpu_memory()
 
 
 
@@ -150,24 +144,8 @@ torch.cuda.empty_cache()  # frees cached memory (not allocated memory)
 
  
 
-import torch.nn as nn
-import torchvision.models as models
 
-def replace_bn_with_gn(module, num_groups=32):
-    """
-    Recursively replace all BatchNorm2d with GroupNorm.
-    """
-    for name, child in module.named_children():
-        if isinstance(child, nn.BatchNorm2d):
-            num_channels = child.num_features
-            gn = nn.GroupNorm(
-                num_groups=min(num_groups, num_channels), 
-                num_channels=num_channels
-            )
-            setattr(module, name, gn)
-        else:
-            replace_bn_with_gn(child, num_groups)
-    return module
+
 
 
 def resnet_no_bn(in_channels=1, pretrained=True, num_groups=32):
@@ -202,30 +180,6 @@ BLANK_INDEX = 0  # always index 0
 
 import torch
 
-""" def merge_models(model1, model2, alpha=0.5):
-    
-    state1 = model1.state_dict()
-    state2 =model2.state_dict()
-
-    merged_state = {}
-    for k in state1.keys():
-        merged_state[k] = (alpha * state1[k] + (1 - alpha) * state2[k])
-
-    # create a new model instance (same architecture as model1)
-    
-    #merged_model = CRNN(num_classes=num_classes,img_height=64,in_channels=1)
-
-    merged_model = type(model1)(
-    num_classes=num_classes,
-    img_height=64,
-    in_channels=1
-    )
-    merged_model.load_state_dict(merged_state)
-
-    
-
-    merged_model.load_state_dict(merged_state)
-    return merged_model """
 
 
 import torch
@@ -235,53 +189,6 @@ import copy
 import torch
 import copy
 import torch
-
-def merge_best_states(global_model, best_dicts, alphas=None):
-    """
-    global_model: the model to load merged weights into
-    best_dicts: list of state_dicts from different dataloaders [dict1, dict2, ...]
-    alphas: list of weights for each state_dict (must sum to 1)
-    """
-    if alphas is None:
-        alphas = [1.0 / len(best_dicts)] * len(best_dicts)  # equal weighting
-
-    # start from global_model state_dict
-    merged_state = copy.deepcopy(global_model.state_dict())
-
-    # merge each parameter
-    for key in merged_state.keys():
-        merged_state[key] = sum(alpha * bd[key] for alpha, bd in zip(alphas, best_dicts))
-
-    # load merged weights into global_model
-    global_model.load_state_dict(merged_state)
-    return global_model
-import copy
-import torch
-
-def merge_best_task_layers(global_model, best_dicts, alphas=None, merge_cnn5=False):
-    if alphas is None:
-        alphas = [1.0 / len(best_dicts)] * len(best_dicts)
-
-    with torch.no_grad():  # prevent autograd tracking
-        for name, param in global_model.named_parameters():
-            if ("lstm" in name) or ("fc" in name) or (merge_cnn5 and "cnn.5" in name):
-                merged = sum(alpha * bd[name] for alpha, bd in zip(alphas, best_dicts))
-                param.copy_(merged)   # 
-
-    return global_model
-
-
-
-def merge_models(model1, model2, alpha=0.5):
-    with torch.no_grad():
-        for p1, p2 in zip(model1.parameters(), model2.parameters()):
-            p1.data.copy_(alpha * p1.data + (1 - alpha) * p2.data)
-    
-    # free model2 if not needed anymore
-    model2 = None
-    clear_gpu_memory()
-    
-    return model1 
 
 
 
@@ -298,20 +205,6 @@ def encode_text(text):
 def encode_text(text, char_to_idx):
     """Convert string to list of integer indices (no blank)"""
     return [char_to_idx[c] for c in text if c in char_to_idx]
-
-def ctc_greedy_decoder_batch(preds, idx_to_char, blank=0):
-
-    pred_texts = []
-    for seq in preds:               # loop over batch
-        decoded = []
-        prev = blank
-        for p in seq:               # loop over timesteps
-            p = p.item() if hasattr(p, "item") else int(p)
-            if p != prev and p != blank:
-                decoded.append(idx_to_char.get(p, ''))
-            prev = p
-        pred_texts.append("".join(decoded))
-    return pred_texts
 
 
 
